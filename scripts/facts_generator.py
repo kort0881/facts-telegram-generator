@@ -19,7 +19,7 @@ import requests
 import yaml
 from bs4 import BeautifulSoup
 
-# NEW: лучше извлечение основного текста статьи
+# Попытаться использовать trafilatura для лучшего извлечения текста
 try:
     import trafilatura  # pip install trafilatura
     HAS_TRAFILATURA = True
@@ -49,11 +49,14 @@ TOPICS = [
 ]
 
 POST_STYLES = [
-    "история",          # мини-история / кейс
-    "ошибка",           # разбор типичной ошибки/заблуждения
-    "инструкция",       # пошаговая мини-инструкция
-    "провокация",       # провокационный вопрос/перевернутая логика
+    "история",
+    "ошибка",
+    "инструкция",
+    "провокация",
 ]
+
+# Включать ли «красивый» шрифт для заголовка (1-я строка)
+USE_FANCY_TITLE = True
 
 # ---------- Logging ----------
 
@@ -79,11 +82,9 @@ class Config:
     output_dir: str
     current_topic_index: int
 
-    # Fields that should never be persisted
     _SECRET_FIELDS = {"ai_api_key", "tg_bot_token", "tg_chat_id"}
 
     def to_yaml_dict(self) -> Dict[str, Any]:
-        """Return only non-secret, non-runtime fields suitable for saving."""
         return {
             "ai": {
                 "url": self.ai_url,
@@ -96,7 +97,6 @@ class Config:
 
 
 def load_config() -> Config:
-    """Load config from YAML and inject secrets from environment variables."""
     if not os.path.exists(CONFIG_PATH):
         logger.error(f"{CONFIG_PATH} not found.")
         sys.exit(1)
@@ -135,7 +135,6 @@ def load_config() -> Config:
 
 
 def save_config(cfg: Config) -> None:
-    """Persist only non-secret config fields back to YAML."""
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg.to_yaml_dict(), f, allow_unicode=True, default_flow_style=False)
 
@@ -143,10 +142,6 @@ def save_config(cfg: Config) -> None:
 # ---------- Utils ----------
 
 def trim_to_telegram_limit(text: str, max_length: int = TELEGRAM_MAX_LENGTH) -> str:
-    """
-    Trim text to Telegram's character limit, cutting on a natural boundary
-    (sentence end → newline → word) when possible.
-    """
     if len(text) <= max_length:
         return text
 
@@ -227,7 +222,6 @@ class FetchError(Exception):
 
 
 def _extract_with_trafilatura(url: str, html: str) -> str:
-    """Try to use trafilatura for main content extraction."""
     if not HAS_TRAFILATURA:
         return ""
     try:
@@ -242,28 +236,17 @@ def _extract_with_trafilatura(url: str, html: str) -> str:
 
 
 def _extract_with_bs4(html: str) -> str:
-    """Fallback: Basic BeautifulSoup extraction from <article> or <p>."""
     soup = BeautifulSoup(html, "html.parser")
-
-    # Если есть <article> — берём его
     article_tag = soup.find("article")
     if article_tag:
         paragraphs = [p.get_text(" ", strip=True) for p in article_tag.find_all("p")]
     else:
         paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
-
     text = "\n\n".join(p for p in paragraphs if p)
     return text.strip()
 
 
 def fetch_article_text(url: str) -> str:
-    """
-    Fetch URL and return plain-text content of the article.
-
-    1) Пробуем trafilatura (если установлен).
-    2) Если не вышло — fallback на BeautifulSoup.
-    3) Ограничиваем размер текста MAX_ARTICLE_CHARS.
-    """
     headers = {"User-Agent": "Mozilla/5.0 (compatible; FactsBot/1.0)"}
     resp = http_get_with_retries(url, headers=headers)
 
@@ -282,9 +265,7 @@ def fetch_article_text(url: str) -> str:
 
     html = resp.text
 
-    # 1) Trafilatura
     text = _extract_with_trafilatura(url, html)
-    # 2) Fallback на BS4
     if not text or len(text) < 300:
         text = _extract_with_bs4(html)
 
@@ -293,6 +274,36 @@ def fetch_article_text(url: str) -> str:
         return ""
 
     return text[:MAX_ARTICLE_CHARS]
+
+
+# ---------- Fancy title ----------
+
+FANCY_MAP = str.maketrans(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "𝓪𝓫𝓬𝓭𝓮𝓯𝓰𝓱𝓲𝓳𝓴𝓵𝓶𝓷𝓸𝓹𝓺𝓻𝓼𝓽𝓾𝓿𝔀𝔁𝔂𝔃"
+    "𝓐𝓑𝓒𝓓𝓔𝓕𝓖𝓗𝓘𝓙𝓚𝓛𝓜𝓝𝓞𝓟𝓠𝓡𝓢𝓣𝓤𝓥𝓦𝓧𝓨𝓩"
+)
+
+def make_fancy_title(line: str) -> str:
+    # латиница станет «красивой», кириллица останется обычной
+    return line.translate(FANCY_MAP)
+
+
+def apply_fancy_title_if_enabled(text: str) -> str:
+    if not USE_FANCY_TITLE:
+        return text
+
+    lines = text.splitlines()
+    if not lines:
+        return text
+
+    # только первая непустая строка считается заголовком
+    for idx, line in enumerate(lines):
+        if line.strip():
+            lines[idx] = make_fancy_title(line)
+            break
+
+    return "\n".join(lines)
 
 
 # ---------- Prompt ----------
@@ -313,7 +324,8 @@ PROMPT_TEMPLATE = """\
 4) Блок «Почему это важно» — 2–4 предложения простым разговорным языком.
 5) Пустая строка.
 6) Блок «Как применить» — 1–2 предложения с практичным выводом.
-7) Отдельной строкой — вопрос читателю и 2–4 хэштега по теме.
+7) Отдельной строкой — вопрос читателю.
+8) На СЛЕДУЮЩЕЙ строке — 2–4 хэштега по теме, все подряд в самом конце поста.
 
 ДОПОЛНИТЕЛЬНЫЕ ТРЕБОВАНИЯ:
 - Пиши по-русски, живым, современным стилем.
@@ -323,6 +335,7 @@ PROMPT_TEMPLATE = """\
 - Используй эмодзи умеренно: 3–7 на весь пост, по смыслу.
 - Не используй слова «Заголовок», «Факт», «Почему это важно», «Что взять себе» в тексте.
 - Только обычный текст, без какого-либо форматирования.
+- Хэштеги всегда ставь на отдельной строке в самом конце поста, после вопроса.
 - Выбери один УЗКИЙ ракурс из исходного текста и строй весь пост вокруг него
   (например, только модель 4 шагов, или только типичная ошибка, или только один сильный приём).
 - Учитывай стиль: {style_hint}. Если стиль «история» — сделай мини-историю/пример;
@@ -388,13 +401,14 @@ def call_ai_api(cfg: Config, prompt: str) -> str:
 
 def send_to_telegram(text: str, source_url: str, cfg: Config) -> bool:
     """Send a plain-text post to a Telegram channel."""
+    # Оставляем web_page_preview включённым, чтобы тянулась картинка/превью ссылки [web:39][web:43]
     message = trim_to_telegram_limit(f"{text.strip()}\n\n🔗 Источник: {source_url}")
 
     api_url = f"https://api.telegram.org/bot{cfg.tg_bot_token}/sendMessage"
     payload = {
         "chat_id": cfg.tg_chat_id,
         "text": message,
-        "disable_web_page_preview": True,
+        "disable_web_page_preview": False,  # подтягиваем картинку/описание
         "disable_notification": False,
     }
 
@@ -417,7 +431,6 @@ def send_to_telegram(text: str, source_url: str, cfg: Config) -> bool:
 # ---------- Persistence ----------
 
 def save_post(text: str, source_url: str, topic_name: str, output_dir: str) -> str:
-    """Save generated post as a Markdown file."""
     os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
     path = os.path.join(output_dir, f"{timestamp}.md")
@@ -430,7 +443,6 @@ def save_post(text: str, source_url: str, topic_name: str, output_dir: str) -> s
 
 
 def load_links(path: str = LINKS_PATH) -> Dict[str, List[str]]:
-    """Parse links.txt grouped by [topic_id] sections."""
     if not os.path.exists(path):
         logger.error(f"{path} not found")
         sys.exit(1)
@@ -463,7 +475,7 @@ def load_used_links(path: str = USED_LINKS_PATH) -> set:
 
 
 def load_dead_links(path: str = DEAD_LINKS_PATH) -> set:
-    return load_used_links(path)  # same format
+    return load_used_links(path)
 
 
 def save_used_link(url: str, path: str = USED_LINKS_PATH) -> None:
@@ -480,7 +492,6 @@ def save_dead_link(url: str, path: str = DEAD_LINKS_PATH) -> None:
 # ---------- Topic rotation ----------
 
 def rotate_topic(cfg: Config) -> None:
-    """Advance topic index and persist (secrets excluded)."""
     old_name = TOPICS[cfg.current_topic_index]["name"]
     cfg.current_topic_index = (cfg.current_topic_index + 1) % len(TOPICS)
     save_config(cfg)
@@ -488,7 +499,6 @@ def rotate_topic(cfg: Config) -> None:
 
 
 def pick_unused_urls(cfg: Config, links_by_topic: Dict[str, List[str]], n: int = MAX_FETCH_ATTEMPTS) -> List[str]:
-    """Return up to n random unused, non-dead URLs for the current topic."""
     topic = TOPICS[cfg.current_topic_index]
     all_links = links_by_topic.get(topic["id"], [])
 
@@ -510,12 +520,6 @@ def pick_unused_urls(cfg: Config, links_by_topic: Dict[str, List[str]], n: int =
 # ---------- Main ----------
 
 def generate_post(url: str, topic_name: str, cfg: Config) -> bool:
-    """
-    Fetch, generate, save and send a single post.
-
-    Returns True on success.
-    Raises FetchError if the URL is permanently broken (caller should blacklist it).
-    """
     article_text = fetch_article_text(url)  # may raise FetchError
     if not article_text or len(article_text) < 100:
         logger.warning(f"Skipping {url}: source text too short or empty")
@@ -527,6 +531,9 @@ def generate_post(url: str, topic_name: str, cfg: Config) -> bool:
     if not ai_text or len(ai_text) < 100:
         logger.warning(f"Skipping {url}: AI response too short")
         return False
+
+    # применяем «красивый» шрифт только к заголовку, если включено
+    ai_text = apply_fancy_title_if_enabled(ai_text)
 
     save_post(ai_text, url, topic_name, cfg.output_dir)
     send_to_telegram(ai_text, url, cfg)
@@ -557,11 +564,11 @@ def main() -> None:
         except FetchError as e:
             logger.error(f"Dead link detected: {e}")
             save_dead_link(url)
-            continue  # try next candidate
+            continue
 
         if success:
             break
-        # transient failure (empty body, short AI reply) — try next
+
         logger.warning("Trying next candidate URL...")
 
     logger.info("Post generated successfully." if success else "All candidates failed.")
@@ -571,3 +578,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
