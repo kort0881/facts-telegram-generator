@@ -32,12 +32,19 @@ logger = logging.getLogger("facts_generator")
 CONFIG_PATH = "config.yaml"
 LINKS_PATH = "links.txt"
 
-MAX_TG_LEN = 3800  # запас под ссылку/форматирование (< 4096 символов лимита Telegram)[web:20]
-MAX_ARTICLE_CHARS = 6000  # контекст для модели
+MAX_TG_LEN = 3800
+MAX_ARTICLE_CHARS = 6000
 
 HTTP_TIMEOUT = 20
 HTTP_RETRIES = 3
-HTTP_BACKOFF = 3  # секунд
+HTTP_BACKOFF = 3
+
+TOPICS = [
+    {"id": "habits", "name": "Привычки и поведение"},
+    {"id": "memory", "name": "Память и мышление"},
+    {"id": "history", "name": "История и культура"},
+    {"id": "laws", "name": "Странные законы и социальные нормы"},
+]
 
 
 # ---------- Utils ----------
@@ -55,6 +62,26 @@ def load_config() -> Dict[str, Any]:
     return cfg
 
 
+def save_config(cfg: Dict[str, Any]) -> None:
+    """Save config back to YAML file."""
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f, allow_unicode=True, default_flow_style=False)
+
+
+def get_current_topic_index(cfg: Dict[str, Any]) -> int:
+    """Get current topic index from config."""
+    return cfg.get("current_topic_index", 0)
+
+
+def set_next_topic_index(cfg: Dict[str, Any]) -> None:
+    """Increment topic index and save to config."""
+    current = get_current_topic_index(cfg)
+    next_index = (current + 1) % len(TOPICS)
+    cfg["current_topic_index"] = next_index
+    save_config(cfg)
+    logger.info(f"Topic rotated: {TOPICS[current]['name']} → {TOPICS[next_index]['name']}")
+
+
 def http_get_with_retries(
     url: str,
     timeout: int = HTTP_TIMEOUT,
@@ -69,7 +96,6 @@ def http_get_with_retries(
         try:
             resp = requests.get(url, headers=headers, timeout=timeout)
             if resp.status_code >= 500:
-                # серверная ошибка — можно попробовать ещё раз
                 logger.warning(f"Server error {resp.status_code} on {url}, attempt {attempt}/{max_retries}")
                 if attempt < max_retries:
                     time.sleep(backoff * attempt)
@@ -143,14 +169,16 @@ def fetch_text_from_url(url: str, timeout: int = HTTP_TIMEOUT) -> str:
 
 # ---------- Prompt building ----------
 
-def build_prompt(article_text: str) -> str:
-    """Build AI prompt for fact generation."""
+def build_prompt(article_text: str, topic_name: str) -> str:
+    """Build AI prompt for fact generation with topic context."""
     return f"""Ты редактор русскоязычного Telegram-канала "Любопытные факты".
+
+СЕГОДНЯШНЯЯ ТЕМА: {topic_name}
 
 Тебе дают исходный текст (статья, заметка, новость).
 
 ЗАДАЧА:
-1. Найди 1–2 малоизвестных или неочевидных факта.
+1. Найди 1–2 малоизвестных или неочевидных факта по теме "{topic_name}".
 2. Сформируй один связный пост в формате:
 
 Заголовок: цепляющий, до 10–12 слов.
@@ -165,6 +193,7 @@ def build_prompt(article_text: str) -> str:
 - Без политики, цензуры, VPN, конфликтов, войн.
 - Темы ок: психология, поведение, привычки, история, культура, быт, природа.
 - Не используй HTML-теги, только обычный текст (без <b>, <i> и т.п.).
+- Свой тон, ирония, примеры из жизни — сделай факт живым и запоминающимся.
 
 Исходный текст:
 {article_text}
@@ -194,7 +223,7 @@ def call_ai_api(api_cfg: Dict[str, Any], prompt: str) -> str:
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
-    }  # OpenAI‑совместимый формат chat completions[web:9]
+    }
 
     logger.info(f"Calling AI API: {url}")
     resp = http_post_with_retries(url, payload, headers, timeout=60)
@@ -250,20 +279,16 @@ def send_to_telegram(text: str, url: str, cfg: Dict[str, Any]) -> None:
         return
 
     base_text = text.strip()
-    # Добавляем ссылку на источник в конец сообщения
     message = f"{base_text}\n\n🔗 Источник: {url}"
 
-    # Обрезаем под лимит Telegram
     message = trim_for_telegram(message)
-
-    # Так как в промпте мы запретили HTML‑теги, можно экранировать на всякий случай
     safe_message = html.escape(message)
 
     api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": safe_message,
-        "parse_mode": "HTML",  # поддерживает базовый HTML, но мы всё экранировали[web:13]
+        "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
 
@@ -282,7 +307,7 @@ def send_to_telegram(text: str, url: str, cfg: Dict[str, Any]) -> None:
 
 # ---------- Persistence ----------
 
-def save_post(text: str, url: str, cfg: Dict[str, Any]) -> str:
+def save_post(text: str, url: str, topic_name: str, cfg: Dict[str, Any]) -> str:
     """Save generated post to file and return filename."""
     output_dir = cfg.get("output", {}).get("directory", "output/posts")
     os.makedirs(output_dir, exist_ok=True)
@@ -292,6 +317,7 @@ def save_post(text: str, url: str, cfg: Dict[str, Any]) -> str:
 
     message = trim_for_telegram(text.strip())
     with open(filename, "w", encoding="utf-8") as f:
+        f.write(f"# {topic_name}\n\n")
         f.write(message)
         f.write(f"\n\n🔗 Источник: {url}\n")
 
@@ -299,20 +325,39 @@ def save_post(text: str, url: str, cfg: Dict[str, Any]) -> str:
     return filename
 
 
-# ---------- Main flow ----------
+# ---------- Links management ----------
 
-def load_links(path: str = LINKS_PATH) -> List[str]:
+def load_links(path: str = LINKS_PATH) -> Dict[str, List[str]]:
+    """Load links grouped by topic from file."""
     if not os.path.exists(path):
         logger.error(f"{path} not found")
         sys.exit(1)
+    
+    links_by_topic = {topic["id"]: [] for topic in TOPICS}
+    current_topic = None
+    
     with open(path, "r", encoding="utf-8") as f:
-        links = [
-            line.strip()
-            for line in f
-            if line.strip() and not line.strip().startswith("#")
-        ]
-    return links
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            
+            # Check for topic marker like [habits], [memory], etc.
+            if line.startswith("[") and line.endswith("]"):
+                topic_id = line[1:-1].lower()
+                if topic_id in links_by_topic:
+                    current_topic = topic_id
+                    logger.info(f"Found topic section: {topic_id}")
+                continue
+            
+            # Add link to current topic
+            if current_topic and line.startswith("http"):
+                links_by_topic[current_topic].append(line)
+    
+    return links_by_topic
 
+
+# ---------- Main flow ----------
 
 def main() -> None:
     logger.info("Starting Facts Generator...")
@@ -320,33 +365,51 @@ def main() -> None:
     cfg = load_config()
     ai_cfg = cfg["ai"]
 
-    links = load_links()
-    logger.info(f"Found {len(links)} links to process")
+    # Get current topic
+    topic_index = get_current_topic_index(cfg)
+    current_topic = TOPICS[topic_index]
+    topic_id = current_topic["id"]
+    topic_name = current_topic["name"]
+    
+    logger.info(f"Current topic: {topic_name} (index {topic_index})")
+
+    # Load links grouped by topic
+    links_by_topic = load_links()
+    links = links_by_topic.get(topic_id, [])
+    
+    if not links:
+        logger.warning(f"No links found for topic '{topic_id}'. Skipping.")
+        set_next_topic_index(cfg)
+        return
+    
+    logger.info(f"Found {len(links)} links for topic '{topic_id}'")
 
     success_count = 0
     skipped_short_source = 0
     skipped_ai_short = 0
 
-    for url in links:
-        logger.info(f"Processing: {url}")
+    # Process only ONE link per run (to rotate topics daily)
+    url = links[0]
+    logger.info(f"Processing: {url}")
 
-        article_text = fetch_text_from_url(url)
-        if not article_text or len(article_text) < 100:
-            logger.warning(f"Skipping {url} - too short or empty source text")
-            skipped_short_source += 1
-            continue
-
-        prompt = build_prompt(article_text)
+    article_text = fetch_text_from_url(url)
+    if not article_text or len(article_text) < 100:
+        logger.warning(f"Skipping {url} - too short or empty source text")
+        skipped_short_source += 1
+    else:
+        prompt = build_prompt(article_text, topic_name)
         ai_answer = call_ai_api(ai_cfg, prompt)
 
         if not ai_answer or len(ai_answer) < 100:
             logger.warning(f"Skipping {url} - AI returned too short response")
             skipped_ai_short += 1
-            continue
+        else:
+            save_post(ai_answer, url, topic_name, cfg)
+            send_to_telegram(ai_answer, url, cfg)
+            success_count += 1
 
-        save_post(ai_answer, url, cfg)
-        send_to_telegram(ai_answer, url, cfg)
-        success_count += 1
+    # Rotate to next topic for next run
+    set_next_topic_index(cfg)
 
     logger.info(
         f"Completed. Generated {success_count} posts. "
