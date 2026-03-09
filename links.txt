@@ -1,4 +1,4 @@
-# Facts Generator - Source Links
+# Facts Generator - Source Links для канала "Что ты не знал"
 # Organize links by topic using [topic_id] markers
 # Supported topics: habits, memory, history, laws
 
@@ -7,27 +7,42 @@
 # ========================================
 [habits]
 
-# Статьи о формировании привычек
-https://habr.com/ru/articles/psychology/
-https://nplus1.ru/news/2023/habits
+# James Clear — автор Atomic Habits, все статьи с исследованиями
+https://jamesclear.com/three-steps-habit-change
+https://jamesclear.com/one-sentence-habits
+https://jamesclear.com/habits
+
+# N+1 — русский научпоп про поведение (проверенные источники)
+https://nplus1.ru/news/2022/05/23/prosocial-antisocial
+
+# Scientific American — поведенческая психология
 https://www.scientificamerican.com/article/how-to-build-new-habits/
 
-# Исследования о поведении
-https://www.nature.com/subjects/human-behaviour
+# Psychology Today — привычки и мотивация
 https://www.psychologytoday.com/intl/basics/habits
+
+# Nature — исследования человеческого поведения
+https://www.nature.com/subjects/human-behaviour
 
 # ========================================
 # Память и мышление (memory)
 # ========================================
 [memory]
 
-# Когнитивная психология
-https://nplus1.ru/rubric/neuroscience
-https://www.newscientist.com/article-topic/brain/
-https://www.scientificamerican.com/neuroscience/
+# Scientific American — нейронаука и память
+https://www.scientificamerican.com/article/you-dont-remember-being-a-baby-but-your-brain-was-making-memories/
+https://www.scientificamerican.com/article/what-is-the-memory-capacity/
 
-# Исследования памяти
+# New Scientist — как работает мозг
+https://www.newscientist.com/article-topic/brain/
+
+# N+1 — русский научпоп про нейронауку
+https://nplus1.ru/rubric/neuroscience
+
+# Nature — исследования памяти
 https://www.nature.com/subjects/memory
+
+# Psychology Today — когнитивная психология
 https://www.psychologytoday.com/intl/basics/memory
 
 # ========================================
@@ -35,13 +50,20 @@ https://www.psychologytoday.com/intl/basics/memory
 # ========================================
 [history]
 
-# Исторические факты и культура
+# Smithsonian Magazine — качественные истории с контекстом
+https://www.smithsonianmag.com/history/
+https://www.smithsonianmag.com/category/world-history/
+
+# BBC Culture — культура и история
 https://www.bbc.com/culture
-https://www.history.com/topics
+
+# National Geographic — исторические факты
 https://www.nationalgeographic.com/history/
 
-# Археология и антропология
-https://www.smithsonianmag.com/history/
+# History Today — короткие статьи с неочевидными фактами
+https://www.historytoday.com/
+
+# Archaeology.org — археология и антропология
 https://www.archaeology.org/news
 
 # ========================================
@@ -49,18 +71,29 @@ https://www.archaeology.org/news
 # ========================================
 [laws]
 
-# Необычные законы
-https://www.rd.com/list/weird-laws/
-https://www.businessinsider.com/weird-laws-around-the-world
+# The Atlantic Ideas — эссе про социальные нормы с контекстом
+https://www.theatlantic.com/family/archive/2022/11/people-oversharing-tmi-friendship-boundaries/671970/
 
-# Социология и право
-https://www.theatlantic.com/ideas/
+# Vox Explainers — объясняют "почему этот закон появился"
 https://www.vox.com/policy-and-politics
 
+# The Atlantic — как меняются социальные нормы
+https://www.theatlantic.com/ideas/
+
+# Aeon Essays — философские эссе про нормы и поведение
+https://aeon.co/essays
+
 # ========================================
-# TIPS:
-# - Add new links under appropriate [topic] section
-# - Use URLs with substantial text content (avoid paywalls)
-# - Mix different sources for diverse perspectives
-# - Avoid pages requiring authentication
+# ПРАВИЛА ОТБОРА ИСТОЧНИКОВ:
+# ========================================
+# ✅ Должен быть неочевидный факт ("Вау, не знал!")
+# ✅ Есть ссылка на исследование (PubMed/Nature/журнал)
+# ✅ Практический вывод ("Что взять себе")
+# ✅ Достаточно контекста (500+ слов)
+# ✅ Открытый доступ (без пейволов)
+#
+# ❌ Банальные факты ("вода мокрая")
+# ❌ "Учёные доказали" без ссылок
+# ❌ Короткие новости без контекста
+# ❌ Сайты за пейволом
 # ========================================
