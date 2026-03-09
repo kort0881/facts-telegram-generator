@@ -16,7 +16,7 @@ jobs:
     env:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
-      TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+      TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
       TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
 
     steps:
@@ -36,19 +36,33 @@ jobs:
 
       - name: Create config.yaml
         run: |
-          cat > config.yaml << 'EOF'
-          ai:
-            url: "https://api.groq.com/openai/v1/chat/completions"
-            model: "llama-3.3-70b-versatile"
-            max_tokens: 900
-          output:
-            directory: "output/posts"
-            format: "markdown"
-          logging:
-            level: "INFO"
-            file: "facts_generator.log"
-          current_topic_index: 0
-          EOF
+          cat > config.yaml << EOF
+ai:
+  url: "https://api.groq.com/openai/v1/chat/completions"
+  model: "llama-3.3-70b-versatile"
+  max_tokens: 900
+output:
+  directory: "output/posts"
+  format: "markdown"
+logging:
+  level: "INFO"
+  file: "facts_generator.log"
+current_topic_index: 0
+      - name: Create config.yaml
+        run: |
+          cat > config.yaml << EOF
+ai:
+  url: "https://api.groq.com/openai/v1/chat/completions"
+  model: "llama-3.3-70b-versatile"
+  max_tokens: 900
+output:
+  directory: "output/posts"
+  format: "markdown"
+logging:
+  level: "INFO"
+  file: "facts_generator.log"
+current_topic_index: 0
+EOF
 
       - name: Run facts generator
         timeout-minutes: 10
@@ -62,3 +76,4 @@ jobs:
           git add output/posts/ config.yaml || true
           git commit -m "Add generated facts [skip ci]" || echo "Nothing to commit"
           git push || echo "Nothing to push"
+
