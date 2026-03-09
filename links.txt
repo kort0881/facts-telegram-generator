@@ -1,11 +1,66 @@
-# Add your source URLs here, one per line
-# The script will fetch content from these URLs and generate fact posts
+# Facts Generator - Source Links
+# Organize links by topic using [topic_id] markers
+# Supported topics: habits, memory, history, laws
 
-https://habr.com/ru/articles/
-https://meduza.io/
-https://www.bbc.com/news
+# ========================================
+# Привычки и поведение (habits)
+# ========================================
+[habits]
 
-# Tips for best results:
-# - Use URLs to articles with substantial text content
-# - Mix different sources to get diverse topics
-# - Avoid pages with paywalls or authentication requirements
+# Статьи о формировании привычек
+https://habr.com/ru/articles/psychology/
+https://nplus1.ru/news/2023/habits
+https://www.scientificamerican.com/article/how-to-build-new-habits/
+
+# Исследования о поведении
+https://www.nature.com/subjects/human-behaviour
+https://www.psychologytoday.com/intl/basics/habits
+
+# ========================================
+# Память и мышление (memory)
+# ========================================
+[memory]
+
+# Когнитивная психология
+https://nplus1.ru/rubric/neuroscience
+https://www.newscientist.com/article-topic/brain/
+https://www.scientificamerican.com/neuroscience/
+
+# Исследования памяти
+https://www.nature.com/subjects/memory
+https://www.psychologytoday.com/intl/basics/memory
+
+# ========================================
+# История и культура (history)
+# ========================================
+[history]
+
+# Исторические факты и культура
+https://www.bbc.com/culture
+https://www.history.com/topics
+https://www.nationalgeographic.com/history/
+
+# Археология и антропология
+https://www.smithsonianmag.com/history/
+https://www.archaeology.org/news
+
+# ========================================
+# Странные законы и социальные нормы (laws)
+# ========================================
+[laws]
+
+# Необычные законы
+https://www.rd.com/list/weird-laws/
+https://www.businessinsider.com/weird-laws-around-the-world
+
+# Социология и право
+https://www.theatlantic.com/ideas/
+https://www.vox.com/policy-and-politics
+
+# ========================================
+# TIPS:
+# - Add new links under appropriate [topic] section
+# - Use URLs with substantial text content (avoid paywalls)
+# - Mix different sources for diverse perspectives
+# - Avoid pages requiring authentication
+# ========================================
