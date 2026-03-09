@@ -35,7 +35,7 @@ jobs:
 
       - name: Run facts generator
         run: |
-          python scripts/facts_main.py
+          python scripts/facts_generator.py
 
       - name: Commit and push generated posts
         run: |
