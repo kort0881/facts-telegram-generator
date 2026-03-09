@@ -1,67 +1,3 @@
-name: Generate Facts
-
-on:
-  schedule:
-    - cron: "0 */6 * * *"
-  workflow_dispatch:
-
-permissions:
-  contents: write
-
-jobs:
-  generate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    env:
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
-      TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Create config.yaml
-        run: |
-          cat > config.yaml << EOF
-ai:
-  url: "https://api.groq.com/openai/v1/chat/completions"
-  model: "llama-3.3-70b-versatile"
-  max_tokens: 900
-output:
-  directory: "output/posts"
-  format: "markdown"
-logging:
-  level: "INFO"
-  file: "facts_generator.log"
-current_topic_index: 0
-      - name: Create config.yaml
-        run: |
-          cat > config.yaml << EOF
-ai:
-  url: "https://api.groq.com/openai/v1/chat/completions"
-  model: "llama-3.3-70b-versatile"
-  max_tokens: 900
-output:
-  directory: "output/posts"
-  format: "markdown"
-logging:
-  level: "INFO"
-  file: "facts_generator.log"
-current_topic_index: 0
       - name: Create config.yaml
         run: |
           cat > config.yaml << EOF
@@ -77,6 +13,7 @@ logging:
   file: "facts_generator.log"
 current_topic_index: 0
 EOF
+
       - name: Run facts generator
         timeout-minutes: 10
         run: |
@@ -89,5 +26,3 @@ EOF
           git add output/posts/ config.yaml || true
           git commit -m "Add generated facts [skip ci]" || echo "Nothing to commit"
           git push || echo "Nothing to push"
-
-
