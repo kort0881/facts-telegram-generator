@@ -21,3 +21,6 @@ output:
 logging:
   level: "INFO"
   file: "facts_generator.log"
+
+# Topic rotation (automatically updated by script)
+current_topic_index: 0  # 0=habits, 1=memory, 2=history, 3=laws
