@@ -1,0 +1,358 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Facts Telegram Generator
+Auto-generates Telegram fact posts via AI (Groq/OpenRouter/OpenAI-compatible) + GitHub Actions
+"""
+
+import os
+import sys
+import json
+import time
+import datetime
+import logging
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+
+import requests
+import yaml
+from bs4 import BeautifulSoup
+import html
+
+# ---------- Logging ----------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger("facts_generator")
+
+# ---------- Constants ----------
+
+CONFIG_PATH = "config.yaml"
+LINKS_PATH = "links.txt"
+
+MAX_TG_LEN = 3800  # запас под ссылку/форматирование (< 4096 символов лимита Telegram)[web:20]
+MAX_ARTICLE_CHARS = 6000  # контекст для модели
+
+HTTP_TIMEOUT = 20
+HTTP_RETRIES = 3
+HTTP_BACKOFF = 3  # секунд
+
+
+# ---------- Utils ----------
+
+def load_config() -> Dict[str, Any]:
+    """Load config from YAML file."""
+    if not os.path.exists(CONFIG_PATH):
+        logger.error(f"{CONFIG_PATH} not found. Copy config.yaml.example to config.yaml")
+        sys.exit(1)
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    if "ai" not in cfg:
+        logger.error("Section 'ai' not found in config.yaml")
+        sys.exit(1)
+    return cfg
+
+
+def http_get_with_retries(
+    url: str,
+    timeout: int = HTTP_TIMEOUT,
+    max_retries: int = HTTP_RETRIES,
+    backoff: int = HTTP_BACKOFF,
+    headers: Optional[Dict[str, str]] = None,
+) -> Optional[requests.Response]:
+    """GET with simple retry logic for transient errors (5xx, timeouts)."""
+    if headers is None:
+        headers = {}
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            if resp.status_code >= 500:
+                # серверная ошибка — можно попробовать ещё раз
+                logger.warning(f"Server error {resp.status_code} on {url}, attempt {attempt}/{max_retries}")
+                if attempt < max_retries:
+                    time.sleep(backoff * attempt)
+                    continue
+            return resp
+        except (requests.Timeout, requests.ConnectionError) as e:
+            logger.warning(f"Network error on {url}, attempt {attempt}/{max_retries}: {e}")
+            if attempt < max_retries:
+                time.sleep(backoff * attempt)
+                continue
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error on {url}: {e}")
+            return None
+    return None
+
+
+def http_post_with_retries(
+    url: str,
+    json_payload: Dict[str, Any],
+    headers: Dict[str, str],
+    timeout: int = HTTP_TIMEOUT,
+    max_retries: int = HTTP_RETRIES,
+    backoff: int = HTTP_BACKOFF,
+) -> Optional[requests.Response]:
+    """POST with retry logic for transient errors."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.post(url, json=json_payload, headers=headers, timeout=timeout)
+            if resp.status_code >= 500 or resp.status_code == 429:
+                logger.warning(
+                    f"API error {resp.status_code} on {url}, attempt {attempt}/{max_retries}, body={resp.text[:300]}"
+                )
+                if attempt < max_retries:
+                    time.sleep(backoff * attempt)
+                    continue
+            return resp
+        except (requests.Timeout, requests.ConnectionError) as e:
+            logger.warning(f"Network error on POST {url}, attempt {attempt}/{max_retries}: {e}")
+            if attempt < max_retries:
+                time.sleep(backoff * attempt)
+                continue
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error on POST {url}: {e}")
+            return None
+    return None
+
+
+# ---------- Content fetching ----------
+
+def fetch_text_from_url(url: str, timeout: int = HTTP_TIMEOUT) -> str:
+    """Fetch and extract text from URL."""
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; FactsBot/1.0)"}
+    resp = http_get_with_retries(url, timeout=timeout, headers=headers)
+    if resp is None:
+        logger.error(f"Failed to fetch {url}: no response")
+        return ""
+
+    try:
+        resp.raise_for_status()
+    except Exception as e:
+        logger.error(f"HTTP error fetching {url}: {e}, body={resp.text[:300]}")
+        return ""
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
+    text = "\n\n".join(paragraphs).strip()
+    return text[:MAX_ARTICLE_CHARS]
+
+
+# ---------- Prompt building ----------
+
+def build_prompt(article_text: str) -> str:
+    """Build AI prompt for fact generation."""
+    return f"""Ты редактор русскоязычного Telegram-канала "Любопытные факты".
+
+Тебе дают исходный текст (статья, заметка, новость).
+
+ЗАДАЧА:
+1. Найди 1–2 малоизвестных или неочевидных факта.
+2. Сформируй один связный пост в формате:
+
+Заголовок: цепляющий, до 10–12 слов.
+Факт: 1–3 предложения, конкретная ситуация/наблюдение/результат.
+Почему это важно: 2–4 предложения с объяснением без воды.
+Что взять себе: 1–2 предложения, практический вывод или мысль.
+Хук в конце: один короткий вопрос читателю.
+
+ТРЕБОВАНИЯ:
+- Пиши по-русски.
+- Не копируй дословно текст источника, переформулируй.
+- Без политики, цензуры, VPN, конфликтов, войн.
+- Темы ок: психология, поведение, привычки, история, культура, быт, природа.
+- Не используй HTML-теги, только обычный текст (без <b>, <i> и т.п.).
+
+Исходный текст:
+{article_text}
+"""
+
+
+# ---------- AI API ----------
+
+def call_ai_api(api_cfg: Dict[str, Any], prompt: str) -> str:
+    """Call AI API (OpenAI-compatible chat completions)."""
+    try:
+        url = api_cfg["url"]
+        api_key = api_cfg["api_key"]
+        model = api_cfg["model"]
+    except KeyError as e:
+        logger.error(f"AI config is missing key: {e}")
+        return ""
+
+    max_tokens = api_cfg.get("max_tokens", 900)
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+    }  # OpenAI‑совместимый формат chat completions[web:9]
+
+    logger.info(f"Calling AI API: {url}")
+    resp = http_post_with_retries(url, payload, headers, timeout=60)
+    if resp is None:
+        logger.error("AI API request failed: no response")
+        return ""
+
+    try:
+        resp.raise_for_status()
+    except Exception as e:
+        logger.error(f"AI API HTTP error: {e}, body={resp.text[:500]}")
+        return ""
+
+    try:
+        data = resp.json()
+    except json.JSONDecodeError:
+        logger.error(f"AI API returned invalid JSON: {resp.text[:500]}")
+        return ""
+
+    # Extract text from response
+    if isinstance(data, dict) and "choices" in data and data["choices"]:
+        choice = data["choices"][0]
+        if isinstance(choice, dict):
+            if "message" in choice and isinstance(choice["message"], dict):
+                content = choice["message"].get("content", "")
+                if isinstance(content, str):
+                    return content.strip()
+            if "text" in choice and isinstance(choice["text"], str):
+                return choice["text"].strip()
+
+    logger.error(f"Unexpected AI API response structure: {json.dumps(data)[:500]}")
+    return ""
+
+
+# ---------- Telegram helpers ----------
+
+def trim_for_telegram(text: str, max_len: int = MAX_TG_LEN) -> str:
+    """Trim text to fit Telegram message limit."""
+    if len(text) <= max_len:
+        return text
+    truncated = text[: max_len - 20].rstrip()
+    return truncated + "…"
+
+
+def send_to_telegram(text: str, url: str, cfg: Dict[str, Any]) -> None:
+    """Send post to Telegram channel."""
+    tg_cfg = cfg.get("telegram", {}) or {}
+    bot_token = tg_cfg.get("bot_token")
+    chat_id = tg_cfg.get("chat_id")
+
+    if not bot_token or not chat_id:
+        logger.warning("Telegram config not set, skipping sending")
+        return
+
+    base_text = text.strip()
+    # Добавляем ссылку на источник в конец сообщения
+    message = f"{base_text}\n\n🔗 Источник: {url}"
+
+    # Обрезаем под лимит Telegram
+    message = trim_for_telegram(message)
+
+    # Так как в промпте мы запретили HTML‑теги, можно экранировать на всякий случай
+    safe_message = html.escape(message)
+
+    api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": safe_message,
+        "parse_mode": "HTML",  # поддерживает базовый HTML, но мы всё экранировали[web:13]
+        "disable_web_page_preview": True,
+    }
+
+    logger.info(f"Sending message to Telegram chat {chat_id}")
+    resp = http_post_with_retries(api_url, payload, headers={}, timeout=20)
+    if resp is None:
+        logger.error("Telegram sendMessage failed: no response")
+        return
+
+    try:
+        resp.raise_for_status()
+        logger.info(f"Sent to Telegram channel {chat_id}")
+    except Exception as e:
+        logger.error(f"Error sending to Telegram: {e}, body={resp.text[:500]}")
+
+
+# ---------- Persistence ----------
+
+def save_post(text: str, url: str, cfg: Dict[str, Any]) -> str:
+    """Save generated post to file and return filename."""
+    output_dir = cfg.get("output", {}).get("directory", "output/posts")
+    os.makedirs(output_dir, exist_ok=True)
+
+    now = datetime.datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"{output_dir}/{now}.md"
+
+    message = trim_for_telegram(text.strip())
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(message)
+        f.write(f"\n\n🔗 Источник: {url}\n")
+
+    logger.info(f"Saved post to {filename}")
+    return filename
+
+
+# ---------- Main flow ----------
+
+def load_links(path: str = LINKS_PATH) -> List[str]:
+    if not os.path.exists(path):
+        logger.error(f"{path} not found")
+        sys.exit(1)
+    with open(path, "r", encoding="utf-8") as f:
+        links = [
+            line.strip()
+            for line in f
+            if line.strip() and not line.strip().startswith("#")
+        ]
+    return links
+
+
+def main() -> None:
+    logger.info("Starting Facts Generator...")
+
+    cfg = load_config()
+    ai_cfg = cfg["ai"]
+
+    links = load_links()
+    logger.info(f"Found {len(links)} links to process")
+
+    success_count = 0
+    skipped_short_source = 0
+    skipped_ai_short = 0
+
+    for url in links:
+        logger.info(f"Processing: {url}")
+
+        article_text = fetch_text_from_url(url)
+        if not article_text or len(article_text) < 100:
+            logger.warning(f"Skipping {url} - too short or empty source text")
+            skipped_short_source += 1
+            continue
+
+        prompt = build_prompt(article_text)
+        ai_answer = call_ai_api(ai_cfg, prompt)
+
+        if not ai_answer or len(ai_answer) < 100:
+            logger.warning(f"Skipping {url} - AI returned too short response")
+            skipped_ai_short += 1
+            continue
+
+        save_post(ai_answer, url, cfg)
+        send_to_telegram(ai_answer, url, cfg)
+        success_count += 1
+
+    logger.info(
+        f"Completed. Generated {success_count} posts. "
+        f"Skipped (short source)={skipped_short_source}, (short AI)={skipped_ai_short}"
+    )
+
+
+if __name__ == "__main__":
+    main()
