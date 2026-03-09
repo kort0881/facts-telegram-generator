@@ -125,6 +125,30 @@ def save_post(text: str, url: str, cfg: dict):
     
     logger.info(f"Saved post to {filename}")
 
+def send_to_telegram(text: str, cfg: dict):
+    """Send post to Telegram channel."""
+    try:
+        bot_token = cfg.get("telegram", {}).get("bot_token")
+        chat_id = cfg.get("telegram", {}).get("chat_id")
+        
+        if not bot_token or not chat_id:
+            logger.warning("Telegram config not set, skipping sending")
+            return
+        
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        
+        resp = requests.post(url, json=payload, timeout=20)
+        resp.raise_for_status()
+        logger.info(f"Sent to Telegram channel {chat_id}")
+    except Exception as e:
+        logger.error(f"Error sending to Telegram: {e}")
+
 def main():
     """Main entrypoint."""
     logger.info("Starting Facts Generator...")
@@ -159,6 +183,7 @@ def main():
             continue
         
         save_post(ai_answer, url, cfg)
+                send_to_telegram(ai_answer, cfg)
         success_count += 1
     
     logger.info(f"Completed. Generated {success_count} posts.")
