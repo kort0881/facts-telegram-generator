@@ -2,7 +2,7 @@ name: Generate Facts
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 5,9,13,17,21 * * *"
   workflow_dispatch:
 
 permissions:
@@ -62,3 +62,4 @@ jobs:
           git add output/posts/ config.yaml || true
           git commit -m "Add generated facts [skip ci]" || echo "Nothing to commit"
           git push || echo "Nothing to push"
+
