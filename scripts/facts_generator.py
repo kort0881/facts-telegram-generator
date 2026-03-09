@@ -19,6 +19,13 @@ import requests
 import yaml
 from bs4 import BeautifulSoup
 
+# NEW: лучше извлечение основного текста статьи
+try:
+    import trafilatura  # pip install trafilatura
+    HAS_TRAFILATURA = True
+except ImportError:
+    HAS_TRAFILATURA = False
+
 # ---------- Constants ----------
 
 CONFIG_PATH = "config.yaml"
@@ -39,6 +46,13 @@ TOPICS = [
     {"id": "memory",  "name": "Память и мышление"},
     {"id": "history", "name": "История и культура"},
     {"id": "laws",    "name": "Странные законы и социальные нормы"},
+]
+
+POST_STYLES = [
+    "история",          # мини-история / кейс
+    "ошибка",           # разбор типичной ошибки/заблуждения
+    "инструкция",       # пошаговая мини-инструкция
+    "провокация",       # провокационный вопрос/перевернутая логика
 ]
 
 # ---------- Logging ----------
@@ -212,12 +226,43 @@ class FetchError(Exception):
     """Raised when a URL is permanently broken (4xx) and should be blacklisted."""
 
 
+def _extract_with_trafilatura(url: str, html: str) -> str:
+    """Try to use trafilatura for main content extraction."""
+    if not HAS_TRAFILATURA:
+        return ""
+    try:
+        downloaded = html or trafilatura.fetch_url(url)
+        if not downloaded:
+            return ""
+        text = trafilatura.extract(downloaded, include_comments=False) or ""
+        return text.strip()
+    except Exception as e:
+        logger.warning(f"Trafilatura failed for {url}: {e}")
+        return ""
+
+
+def _extract_with_bs4(html: str) -> str:
+    """Fallback: Basic BeautifulSoup extraction from <article> or <p>."""
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Если есть <article> — берём его
+    article_tag = soup.find("article")
+    if article_tag:
+        paragraphs = [p.get_text(" ", strip=True) for p in article_tag.find_all("p")]
+    else:
+        paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
+
+    text = "\n\n".join(p for p in paragraphs if p)
+    return text.strip()
+
+
 def fetch_article_text(url: str) -> str:
     """
-    Fetch URL and return plain-text content of all <p> tags.
+    Fetch URL and return plain-text content of the article.
 
-    Raises FetchError for permanent client errors (4xx) so the caller
-    can blacklist the URL and avoid retrying it in future runs.
+    1) Пробуем trafilatura (если установлен).
+    2) Если не вышло — fallback на BeautifulSoup.
+    3) Ограничиваем размер текста MAX_ARTICLE_CHARS.
     """
     headers = {"User-Agent": "Mozilla/5.0 (compatible; FactsBot/1.0)"}
     resp = http_get_with_retries(url, headers=headers)
@@ -235,9 +280,18 @@ def fetch_article_text(url: str) -> str:
         logger.error(f"HTTP error for {url}: {e}")
         return ""
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-    paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
-    text = "\n\n".join(paragraphs).strip()
+    html = resp.text
+
+    # 1) Trafilatura
+    text = _extract_with_trafilatura(url, html)
+    # 2) Fallback на BS4
+    if not text or len(text) < 300:
+        text = _extract_with_bs4(html)
+
+    text = text.strip()
+    if not text:
+        return ""
+
     return text[:MAX_ARTICLE_CHARS]
 
 
@@ -247,26 +301,34 @@ PROMPT_TEMPLATE = """\
 Ты редактор русскоязычного Telegram-канала "Любопытные факты".
 
 СЕГОДНЯШНЯЯ ТЕМА: {topic_name}
+СТИЛЬ ПОСТА: {style_hint}
 
 Тебе дают исходный текст (статья, заметка, новость).
 
 Сделай один яркий пост для Telegram-канала в таком формате:
 
 1) Первая строка — цепляющий заголовок с 1–2 эмодзи. Без слова «Заголовок:».
-2) Далее — 1–3 коротких предложения с основным фактом. Не пиши слово «Факт:», просто текст.
+2) Далее — 1–3 коротких предложения с основным фактом.
 3) Пустая строка.
 4) Блок «Почему это важно» — 2–4 предложения простым разговорным языком.
 5) Пустая строка.
 6) Блок «Как применить» — 1–2 предложения с практичным выводом.
 7) Отдельной строкой — вопрос читателю и 2–4 хэштега по теме.
 
-ТРЕБОВАНИЯ:
+ДОПОЛНИТЕЛЬНЫЕ ТРЕБОВАНИЯ:
 - Пиши по-русски, живым, современным стилем.
 - Не копируй дословно текст источника, переформулируй.
-- Без политики, войн, конфликтов, цензуры, VPN и всего около этого.
+- Избегай клише вроде «твоя жизнь — это сумма привычек» и похожих общих фраз.
+- Сделай пост непохожим на типичную мотивационную цитату.
 - Используй эмодзи умеренно: 3–7 на весь пост, по смыслу.
 - Не используй слова «Заголовок», «Факт», «Почему это важно», «Что взять себе» в тексте.
 - Только обычный текст, без какого-либо форматирования.
+- Выбери один УЗКИЙ ракурс из исходного текста и строй весь пост вокруг него
+  (например, только модель 4 шагов, или только типичная ошибка, или только один сильный приём).
+- Учитывай стиль: {style_hint}. Если стиль «история» — сделай мини-историю/пример;
+  если «ошибка» — разберись, где люди чаще всего ошибаются;
+  если «инструкция» — дай пошаговый мини-план;
+  если «провокация» — начни с неожиданной мысли или вопроса.
 
 Исходный текст:
 {article_text}
@@ -274,7 +336,19 @@ PROMPT_TEMPLATE = """\
 
 
 def build_prompt(article_text: str, topic_name: str) -> str:
-    return PROMPT_TEMPLATE.format(topic_name=topic_name, article_text=article_text)
+    style = random.choice(POST_STYLES)
+    style_hint = {
+        "история": "мини-история/пример из жизни или условная ситуация",
+        "ошибка": "разбор типичной ошибки или заблуждения",
+        "инструкция": "короткая пошаговая инструкция",
+        "провокация": "провокационный или неожиданный заход",
+    }[style]
+
+    return PROMPT_TEMPLATE.format(
+        topic_name=topic_name,
+        article_text=article_text,
+        style_hint=style_hint,
+    )
 
 
 # ---------- AI API ----------
