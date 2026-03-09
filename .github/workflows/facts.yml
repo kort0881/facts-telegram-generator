@@ -2,15 +2,22 @@ name: Generate Facts
 
 on:
   schedule:
-    - cron: "0 6 * * *"  # Every day at 06:00 UTC
+    - cron: "0 */6 * * *"  # Каждые 6 часов (UTC)
   workflow_dispatch:
 
 permissions:
-  contents: write  # Allow pushing to repository
+  contents: write
 
 jobs:
   generate:
     runs-on: ubuntu-latest
+
+    env:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GROQ_MODEL: ${{ secrets.GROQ_MODEL }}         # можно не задавать, тогда дефолт
+      TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -25,15 +32,38 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Create config.yaml from environment variable
-        env:
-          CONFIG_YAML: ${{ secrets.CONFIG_YAML }}
+      - name: Create config.yaml from secrets
         run: |
-          if [ -z "$CONFIG_YAML" ]; then
-            echo "ERROR: CONFIG_YAML secret not set. Please add it to GitHub Secrets."
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "ERROR: GROQ_API_KEY secret not set."
             exit 1
           fi
-          echo "$CONFIG_YAML" > config.yaml
+
+          MODEL_VALUE="${GROQ_MODEL:-llama-3.3-70b-versatile}"
+
+          cat > config.yaml << EOF
+ai:
+  url: "https://api.groq.com/openai/v1/chat/completions"
+  api_key: "${GROQ_API_KEY}"
+  model: "${MODEL_VALUE}"
+  max_tokens: 900
+
+telegram:
+  bot_token: "${TG_BOT_TOKEN}"
+  chat_id: "${TG_CHAT_ID}"
+
+output:
+  directory: "output/posts"
+  format: "markdown"
+
+logging:
+  level: "INFO"
+  file: "facts_generator.log"
+
+current_topic_index: 0
+EOF
+
+          echo "Generated config.yaml with model: ${MODEL_VALUE}"
 
       - name: Run facts generator
         run: |
@@ -46,3 +76,4 @@ jobs:
           git add output/posts/ config.yaml || true
           git commit -m "Add generated facts" || echo "Nothing to commit"
           git push || echo "Nothing to push"
+
