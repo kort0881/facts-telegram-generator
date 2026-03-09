@@ -1,0 +1,23 @@
+# AI Configuration
+# Copy this file to config.yaml and fill in your actual values
+
+ai:
+  url: "https://api.groq.com/openai/v1/chat/completions"  # or your AI endpoint
+  api_key: "YOUR_API_KEY_HERE"  # Get from your AI provider
+  model: "mixtral-8x7b-32768"  # Model name (e.g., groq model)
+  max_tokens: 900
+
+# Telegram Bot (optional for CI/CD - use GitHub Secrets instead)
+# telegram:
+#   bot_token: "YOUR_BOT_TOKEN_HERE"
+#   chat_id: "YOUR_CHAT_ID_HERE"
+
+# Output settings
+output:
+  directory: "output/posts"
+  format: "markdown"  # markdown or json
+
+# Logging
+logging:
+  level: "INFO"
+  file: "facts_generator.log"
