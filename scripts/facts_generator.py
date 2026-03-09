@@ -12,7 +12,7 @@ import os
 import random
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -24,6 +24,9 @@ from bs4 import BeautifulSoup
 CONFIG_PATH = "config.yaml"
 LINKS_PATH = "links.txt"
 USED_LINKS_PATH = "used_links.txt"
+DEAD_LINKS_PATH = "dead_links.txt"  # 4xx / permanently broken URLs
+
+MAX_FETCH_ATTEMPTS = 3  # How many URLs to try before giving up on a topic
 
 TELEGRAM_MAX_LENGTH = 4096
 MAX_ARTICLE_CHARS = 6_000
@@ -205,14 +208,26 @@ def http_post_with_retries(
 
 # ---------- Content fetching ----------
 
+class FetchError(Exception):
+    """Raised when a URL is permanently broken (4xx) and should be blacklisted."""
+
+
 def fetch_article_text(url: str) -> str:
-    """Fetch URL and return plain-text content of all <p> tags."""
+    """
+    Fetch URL and return plain-text content of all <p> tags.
+
+    Raises FetchError for permanent client errors (4xx) so the caller
+    can blacklist the URL and avoid retrying it in future runs.
+    """
     headers = {"User-Agent": "Mozilla/5.0 (compatible; FactsBot/1.0)"}
     resp = http_get_with_retries(url, headers=headers)
 
     if resp is None:
         logger.error(f"No response from {url}")
         return ""
+
+    if 400 <= resp.status_code < 500:
+        raise FetchError(f"HTTP {resp.status_code} (permanent) for {url}")
 
     try:
         resp.raise_for_status()
@@ -373,7 +388,17 @@ def load_used_links(path: str = USED_LINKS_PATH) -> set:
         return {line.strip() for line in f if line.strip()}
 
 
+def load_dead_links(path: str = DEAD_LINKS_PATH) -> set:
+    return load_used_links(path)  # same format
+
+
 def save_used_link(url: str, path: str = USED_LINKS_PATH) -> None:
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(url + "\n")
+
+
+def save_dead_link(url: str, path: str = DEAD_LINKS_PATH) -> None:
+    logger.info(f"Blacklisting dead URL: {url}")
     with open(path, "a", encoding="utf-8") as f:
         f.write(url + "\n")
 
@@ -388,30 +413,36 @@ def rotate_topic(cfg: Config) -> None:
     logger.info(f"Topic rotated: {old_name} → {TOPICS[cfg.current_topic_index]['name']}")
 
 
-def pick_unused_url(cfg: Config, links_by_topic: Dict[str, List[str]]) -> Optional[str]:
-    """Return a random unused URL for the current topic, or None."""
+def pick_unused_urls(cfg: Config, links_by_topic: Dict[str, List[str]], n: int = MAX_FETCH_ATTEMPTS) -> List[str]:
+    """Return up to n random unused, non-dead URLs for the current topic."""
     topic = TOPICS[cfg.current_topic_index]
     all_links = links_by_topic.get(topic["id"], [])
 
     if not all_links:
         logger.warning(f"No links configured for topic '{topic['id']}'")
-        return None
+        return []
 
-    used = load_used_links()
-    available = [u for u in all_links if u not in used]
+    excluded = load_used_links() | load_dead_links()
+    available = [u for u in all_links if u not in excluded]
 
     if not available:
-        logger.warning(f"All links for topic '{topic['id']}' already used")
-        return None
+        logger.warning(f"All links for topic '{topic['id']}' are used or dead")
+        return []
 
-    return random.choice(available)
+    random.shuffle(available)
+    return available[:n]
 
 
 # ---------- Main ----------
 
 def generate_post(url: str, topic_name: str, cfg: Config) -> bool:
-    """Fetch, generate, save and send a single post. Returns True on success."""
-    article_text = fetch_article_text(url)
+    """
+    Fetch, generate, save and send a single post.
+
+    Returns True on success.
+    Raises FetchError if the URL is permanently broken (caller should blacklist it).
+    """
+    article_text = fetch_article_text(url)  # may raise FetchError
     if not article_text or len(article_text) < 100:
         logger.warning(f"Skipping {url}: source text too short or empty")
         return False
@@ -438,15 +469,28 @@ def main() -> None:
 
     logger.info(f"Current topic: {topic['name']} (index {cfg.current_topic_index})")
 
-    url = pick_unused_url(cfg, links_by_topic)
+    candidates = pick_unused_urls(cfg, links_by_topic)
+    if not candidates:
+        logger.warning("No available URLs — skipping this run.")
+        rotate_topic(cfg)
+        return
 
-    if url:
-        logger.info(f"Processing: {url}")
-        success = generate_post(url, topic["name"], cfg)
-        logger.info("Post generated successfully." if success else "Post generation failed.")
-    else:
-        logger.warning("No available URL — skipping this run.")
+    success = False
+    for url in candidates:
+        logger.info(f"Trying: {url}")
+        try:
+            success = generate_post(url, topic["name"], cfg)
+        except FetchError as e:
+            logger.error(f"Dead link detected: {e}")
+            save_dead_link(url)
+            continue  # try next candidate
 
+        if success:
+            break
+        # transient failure (empty body, short AI reply) — try next
+        logger.warning("Trying next candidate URL...")
+
+    logger.info("Post generated successfully." if success else "All candidates failed.")
     rotate_topic(cfg)
     logger.info("Done.")
 
