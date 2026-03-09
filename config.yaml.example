@@ -3,8 +3,8 @@
 
 ai:
   url: "https://api.groq.com/openai/v1/chat/completions"  # or your AI endpoint
-  api_key: "YOUR_API_KEY_HERE"  # Get from your AI provider
-  model: "mixtral-8x7b-32768"  # Model name (e.g., groq model)
+  api_key: "YOUR_API_KEY_HERE"  # Get from your AI provider (free at console.groq.com)
+  model: "llama-3.1-70b-versatile"  # Current Groq model (see console.groq.com/docs/models)
   max_tokens: 900
 
 # Telegram Bot (optional for CI/CD - use GitHub Secrets instead)
