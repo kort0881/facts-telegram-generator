@@ -14,7 +14,7 @@ jobs:
 
     env:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      GROQ_MODEL: ${{ secrets.GROQ_MODEL }}         # можно не задавать, тогда дефолт
+      GROQ_MODEL: ${{ secrets.GROQ_MODEL }}         # опционально
       TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
       TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
 
@@ -41,16 +41,16 @@ jobs:
 
           MODEL_VALUE="${GROQ_MODEL:-llama-3.3-70b-versatile}"
 
-          cat > config.yaml << EOF
+          cat > config.yaml << 'EOF'
 ai:
   url: "https://api.groq.com/openai/v1/chat/completions"
-  api_key: "${GROQ_API_KEY}"
-  model: "${MODEL_VALUE}"
+  api_key: "__GROQ_API_KEY__"
+  model: "__MODEL_VALUE__"
   max_tokens: 900
 
 telegram:
-  bot_token: "${TG_BOT_TOKEN}"
-  chat_id: "${TG_CHAT_ID}"
+  bot_token: "__TG_BOT_TOKEN__"
+  chat_id: "__TG_CHAT_ID__"
 
 output:
   directory: "output/posts"
@@ -62,6 +62,12 @@ logging:
 
 current_topic_index: 0
 EOF
+
+          # Подставляем реальные значения вместо плейсхолдеров
+          sed -i "s|__GROQ_API_KEY__|${GROQ_API_KEY}|g" config.yaml
+          sed -i "s|__MODEL_VALUE__|${MODEL_VALUE}|g" config.yaml
+          sed -i "s|__TG_BOT_TOKEN__|${TG_BOT_TOKEN}|g" config.yaml
+          sed -i "s|__TG_CHAT_ID__|${TG_CHAT_ID}|g" config.yaml
 
           echo "Generated config.yaml with model: ${MODEL_VALUE}"
 
