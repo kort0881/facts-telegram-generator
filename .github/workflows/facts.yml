@@ -37,18 +37,18 @@ jobs:
       - name: Create config.yaml
         run: |
           cat > config.yaml << 'EOF'
-ai:
-  url: "https://api.groq.com/openai/v1/chat/completions"
-  model: "llama-3.3-70b-versatile"
-  max_tokens: 900
-output:
-  directory: "output/posts"
-  format: "markdown"
-logging:
-  level: "INFO"
-  file: "facts_generator.log"
-current_topic_index: 0
-EOF
+          ai:
+            url: "https://api.groq.com/openai/v1/chat/completions"
+            model: "llama-3.3-70b-versatile"
+            max_tokens: 900
+          output:
+            directory: "output/posts"
+            format: "markdown"
+          logging:
+            level: "INFO"
+            file: "facts_generator.log"
+          current_topic_index: 0
+          EOF
 
       - name: Run facts generator
         timeout-minutes: 10
