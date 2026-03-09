@@ -1,0 +1,11 @@
+# Add your source URLs here, one per line
+# The script will fetch content from these URLs and generate fact posts
+
+https://habr.com/ru/articles/
+https://meduza.io/
+https://www.bbc.com/news
+
+# Tips for best results:
+# - Use URLs to articles with substantial text content
+# - Mix different sources to get diverse topics
+# - Avoid pages with paywalls or authentication requirements
