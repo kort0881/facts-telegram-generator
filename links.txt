@@ -1,12 +1,7 @@
-# Facts Generator - Source Links для канала "Что ты не знал"
-# Supported topics: habits, memory, history, laws
+# Facts Generator - Source Links
 
-# ========================================
-# Привычки и поведение (habits)
-# ========================================
 [habits]
 
-# James Clear — привычки и поведение
 https://jamesclear.com/three-steps-habit-change
 https://jamesclear.com/one-sentence-habits
 https://jamesclear.com/habits
@@ -15,71 +10,53 @@ https://jamesclear.com/habit-stacking
 https://jamesclear.com/identity-based-habits
 https://jamesclear.com/motivation-rituals
 
-# N+1 — поведение
-https://nplus1.ru/news/2022/05/23/prosocial-antisocial
-
-# Scientific American / Psychology Today / Nature — поведение
 https://www.scientificamerican.com/article/how-to-build-new-habits/
 https://www.psychologytoday.com/intl/basics/habits
-https://www.nature.com/subjects/human-behaviour
 
-# ========================================
-# Память и мышление (memory)
-# ========================================
+# новые хорошие источники
+https://www.theguardian.com/lifeandstyle
+https://www.iflscience.com/brain/
+
+
 [memory]
 
-# Scientific American — память и мозг
-https://www.scientificamerican.com/article/you-dont-remember-being-a-baby-but-your-brain-was-making-memories/
-https://www.scientificamerican.com/article/what-is-the-memory-capacity/
 https://www.scientificamerican.com/article/how-memory-works/
+https://www.scientificamerican.com/article/what-is-the-memory-capacity/
 
-# Dana / Nature / Psychology Today — память
 https://www.dana.org/article/memory-and-the-brain/
-https://www.nature.com/subjects/memory
+
 https://www.psychologytoday.com/intl/basics/memory
 
-# N+1 / New Scientist — нейронаука и мышление
-https://nplus1.ru/rubric/neuroscience
-https://www.newscientist.com/article-topic/brain/
-https://www.newscientist.com/article-topic/memory/
+# новые
+https://www.newscientist.com/subject/brain/
+https://www.newscientist.com/subject/psychology/
 
-# ========================================
-# История и культура (history)
-# ========================================
+
 [history]
 
-# Smithsonian Magazine — история
 https://www.smithsonianmag.com/history/
 https://www.smithsonianmag.com/category/world-history/
 
-# National Geographic / BBC Culture
-https://www.nationalgeographic.com/history/
-https://www.bbc.com/culture
 https://www.bbc.com/future
 
-# History Today / Archaeology
-https://www.historytoday.com/
 https://www.archaeology.org/news
 
-# Aeon — исторические эссе
-https://aeon.co/history
+# новые
+https://www.theguardian.com/science
+https://www.atlasobscura.com/articles
 
-# ========================================
-# Странные законы и социальные нормы (laws)
-# ========================================
+
 [laws]
 
-# The Atlantic — социальные нормы и поведение
-https://www.theatlantic.com/family/archive/2022/11/people-oversharing-tmi-friendship-boundaries/671970/
 https://www.theatlantic.com/ideas/
 
-# Vox Explainers — законы и политика
-https://www.vox.com/policy-and-politics
 https://www.vox.com/the-big-idea
 
-# Aeon Essays — нормы и философия
 https://aeon.co/essays
 
-# Mental Floss — странные законы
 https://www.mentalfloss.com/posts/weird-laws-united-states
+
+# новые
+https://www.bbc.com/future/big-ideas
+https://www.atlasobscura.com/articles
 
