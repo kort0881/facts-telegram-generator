@@ -1,581 +1,347 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Facts Telegram Generator
-Auto-generates Telegram fact posts via AI (Groq/OpenAI-compatible) + GitHub Actions
+Facts Generator ULTRA
+Improved Telegram fact post generator
+
+Key improvements:
+- Uses ALL sources instead of one topic
+- Extracts real articles from category pages
+- Shorter context for better AI quality
+- Cleaner Telegram-style posts
+- Prevents reused URLs
+- Better logging
 """
 
-import datetime
-import json
-import logging
 import os
 import random
-import sys
-import time
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
-
 import requests
 import yaml
+import datetime
+import logging
+import sys
 from bs4 import BeautifulSoup
 
-# Попытаться использовать trafilatura для лучшего извлечения текста
-try:
-    import trafilatura  # pip install trafilatura
-    HAS_TRAFILATURA = True
-except ImportError:
-    HAS_TRAFILATURA = False
-
-# ---------- Constants ----------
+# =========================
+# CONFIG FILES
+# =========================
 
 CONFIG_PATH = "config.yaml"
 LINKS_PATH = "links.txt"
 USED_LINKS_PATH = "used_links.txt"
-DEAD_LINKS_PATH = "dead_links.txt"  # 4xx / permanently broken URLs
+DEAD_LINKS_PATH = "dead_links.txt"
 
-MAX_FETCH_ATTEMPTS = 3  # How many URLs to try before giving up on a topic
+# =========================
+# SETTINGS
+# =========================
 
-TELEGRAM_MAX_LENGTH = 4096
-MAX_ARTICLE_CHARS = 6_000
+MAX_ARTICLE_CHARS = 2500
+MAX_FETCH_ATTEMPTS = 12
 HTTP_TIMEOUT = 20
-HTTP_RETRIES = 3
-HTTP_BACKOFF = 3
+TELEGRAM_LIMIT = 4096
 
-TOPICS = [
-    {"id": "habits",  "name": "Привычки и поведение"},
-    {"id": "memory",  "name": "Память и мышление"},
-    {"id": "history", "name": "История и культура"},
-    {"id": "laws",    "name": "Странные законы и социальные нормы"},
-]
-
-POST_STYLES = [
-    "история",
-    "ошибка",
-    "инструкция",
-    "провокация",
-]
-
-# Включать ли «красивый» шрифт для заголовка (1-я строка)
-USE_FANCY_TITLE = True
-
-# ---------- Logging ----------
+# =========================
+# LOGGING
+# =========================
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
-logger = logging.getLogger("facts_generator")
+
+log = logging.getLogger("facts_bot")
+
+# =========================
+# CONFIG
+# =========================
 
 
-# ---------- Config ----------
-
-@dataclass
-class Config:
-    """Holds runtime configuration, keeping secrets out of the file."""
-    ai_url: str
-    ai_model: str
-    ai_api_key: str
-    ai_max_tokens: int
-    tg_bot_token: str
-    tg_chat_id: str
-    output_dir: str
-    current_topic_index: int
-
-    _SECRET_FIELDS = {"ai_api_key", "tg_bot_token", "tg_chat_id"}
-
-    def to_yaml_dict(self) -> Dict[str, Any]:
-        return {
-            "ai": {
-                "url": self.ai_url,
-                "model": self.ai_model,
-                "max_tokens": self.ai_max_tokens,
-            },
-            "output": {"directory": self.output_dir},
-            "current_topic_index": self.current_topic_index,
-        }
-
-
-def load_config() -> Config:
-    if not os.path.exists(CONFIG_PATH):
-        logger.error(f"{CONFIG_PATH} not found.")
-        sys.exit(1)
-
+def load_config():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        raw: Dict[str, Any] = yaml.safe_load(f) or {}
+        data = yaml.safe_load(f)
 
-    ai_raw = raw.get("ai", {})
-    tg_raw = raw.get("telegram", {})
+    return {
+        "ai_url": data["ai"]["url"],
+        "ai_model": data["ai"]["model"],
+        "ai_key": os.environ.get("GROQ_API_KEY"),
+        "tg_token": os.environ.get("TG_BOT_TOKEN"),
+        "tg_chat": os.environ.get("TG_CHAT_ID"),
+    }
 
-    api_key   = os.environ.get("GROQ_API_KEY", "").strip()
-    bot_token = os.environ.get("TG_BOT_TOKEN", "").strip()
-    chat_id   = os.environ.get("TG_CHAT_ID", "").strip()
-
-    missing = []
-    if not api_key:   missing.append("GROQ_API_KEY")
-    if not bot_token: missing.append("TG_BOT_TOKEN")
-    if not chat_id:   missing.append("TG_CHAT_ID")
-
-    if missing:
-        logger.error(f"Missing required environment variables: {', '.join(missing)}")
-        sys.exit(1)
-
-    cfg = Config(
-        ai_url=ai_raw.get("url", "https://api.groq.com/openai/v1/chat/completions").strip(),
-        ai_model=os.environ.get("GROQ_MODEL", ai_raw.get("model", "llama-3.3-70b-versatile")).strip(),
-        ai_api_key=api_key,
-        ai_max_tokens=ai_raw.get("max_tokens", 900),
-        tg_bot_token=bot_token,
-        tg_chat_id=chat_id,
-        output_dir=raw.get("output", {}).get("directory", "output/posts"),
-        current_topic_index=int(raw.get("current_topic_index", 0)),
-    )
-    logger.info(f"Configuration loaded. model={cfg.ai_model}")
-    return cfg
+# =========================
+# LINK LOADING
+# =========================
 
 
-def save_config(cfg: Config) -> None:
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg.to_yaml_dict(), f, allow_unicode=True, default_flow_style=False)
+def load_links():
+    links = []
 
+    with open(LINKS_PATH, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
 
-# ---------- Utils ----------
-
-def trim_to_telegram_limit(text: str, max_length: int = TELEGRAM_MAX_LENGTH) -> str:
-    if len(text) <= max_length:
-        return text
-
-    truncated = text[: max_length - 3]
-    cut = max(truncated.rfind("."), truncated.rfind("\n"), truncated.rfind(" "))
-
-    if cut > max_length * 0.7:
-        return text[: cut + 1].strip() + "..."
-    return truncated.strip() + "..."
-
-
-def http_get_with_retries(
-    url: str,
-    headers: Optional[Dict[str, str]] = None,
-    timeout: int = HTTP_TIMEOUT,
-    max_retries: int = HTTP_RETRIES,
-    backoff: int = HTTP_BACKOFF,
-) -> Optional[requests.Response]:
-    for attempt in range(1, max_retries + 1):
-        try:
-            resp = requests.get(url, headers=headers or {}, timeout=timeout)
-            if resp.status_code >= 500:
-                logger.warning(f"Server error {resp.status_code} on {url} (attempt {attempt})")
-                if attempt < max_retries:
-                    time.sleep(backoff * attempt)
-                    continue
-            return resp
-        except (requests.Timeout, requests.ConnectionError) as e:
-            logger.warning(f"Network error on {url} (attempt {attempt}): {e}")
-            if attempt < max_retries:
-                time.sleep(backoff * attempt)
-        except Exception as e:
-            logger.error(f"Unexpected error fetching {url}: {e}")
-            return None
-    return None
-
-
-def http_post_with_retries(
-    url: str,
-    payload: Dict[str, Any],
-    headers: Dict[str, str],
-    timeout: int = 20,
-    max_retries: int = HTTP_RETRIES,
-    retry_delay: int = HTTP_BACKOFF,
-) -> Optional[requests.Response]:
-    for attempt in range(max_retries):
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
-
-            if resp.status_code == 429:
-                wait = int(resp.headers.get("Retry-After", retry_delay))
-                logger.warning(f"Rate limited (429), retrying in {wait}s")
-                time.sleep(wait)
+            if not line:
                 continue
 
-            resp.raise_for_status()
-            return resp
+            if line.startswith("#"):
+                continue
 
-        except requests.exceptions.Timeout:
-            logger.warning(f"Timeout (attempt {attempt + 1}/{max_retries})")
-        except requests.exceptions.ConnectionError:
-            logger.warning(f"Connection error (attempt {attempt + 1}/{max_retries})")
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request failed: {e}")
+            if line.startswith("["):
+                continue
+
+            if line.startswith("http"):
+                links.append(line)
+
+    return links
+
+
+def load_list(path):
+    if not os.path.exists(path):
+        return set()
+
+    with open(path, "r", encoding="utf-8") as f:
+        return {x.strip() for x in f if x.strip()}
+
+
+def save_line(path, line):
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+# =========================
+# HTTP
+# =========================
+
+
+def http_get(url):
+
+    try:
+        r = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=HTTP_TIMEOUT,
+        )
+
+        if r.status_code >= 400:
             return None
 
-        if attempt < max_retries - 1:
-            time.sleep(retry_delay * (2 ** attempt))
+        return r
 
-    logger.error(f"All {max_retries} attempts failed for {url}")
-    return None
+    except Exception:
+        return None
 
-
-# ---------- Content fetching ----------
-
-class FetchError(Exception):
-    """Raised when a URL is permanently broken (4xx) and should be blacklisted."""
+# =========================
+# ARTICLE EXTRACTION
+# =========================
 
 
-def _extract_with_trafilatura(url: str, html: str) -> str:
-    if not HAS_TRAFILATURA:
-        return ""
-    try:
-        downloaded = html or trafilatura.fetch_url(url)
-        if not downloaded:
-            return ""
-        text = trafilatura.extract(downloaded, include_comments=False) or ""
-        return text.strip()
-    except Exception as e:
-        logger.warning(f"Trafilatura failed for {url}: {e}")
-        return ""
+def extract_article_links(url):
+
+    r = http_get(url)
+
+    if not r:
+        return []
+
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    links = []
+
+    for a in soup.find_all("a", href=True):
+
+        href = a["href"]
+
+        if href.startswith("/"):
+            href = requests.compat.urljoin(url, href)
+
+        if any(x in href for x in [
+            "/article/",
+            "/news/",
+            "/story/",
+            "/202",
+            "/post",
+        ]):
+            links.append(href)
+
+    return list(set(links))[:10]
 
 
-def _extract_with_bs4(html: str) -> str:
+def extract_text(html):
+
     soup = BeautifulSoup(html, "html.parser")
-    article_tag = soup.find("article")
-    if article_tag:
-        paragraphs = [p.get_text(" ", strip=True) for p in article_tag.find_all("p")]
-    else:
-        paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
-    text = "\n\n".join(p for p in paragraphs if p)
-    return text.strip()
 
+    paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
 
-def fetch_article_text(url: str) -> str:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; FactsBot/1.0)"}
-    resp = http_get_with_retries(url, headers=headers)
-
-    if resp is None:
-        logger.error(f"No response from {url}")
-        return ""
-
-    if 400 <= resp.status_code < 500:
-        raise FetchError(f"HTTP {resp.status_code} (permanent) for {url}")
-
-    try:
-        resp.raise_for_status()
-    except Exception as e:
-        logger.error(f"HTTP error for {url}: {e}")
-        return ""
-
-    html = resp.text
-
-    text = _extract_with_trafilatura(url, html)
-    if not text or len(text) < 300:
-        text = _extract_with_bs4(html)
-
-    text = text.strip()
-    if not text:
-        return ""
+    text = "\n".join(paragraphs)
 
     return text[:MAX_ARTICLE_CHARS]
 
 
-# ---------- Fancy title ----------
+def fetch_article(url):
 
-FANCY_MAP = str.maketrans(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
-    "𝓪𝓫𝓬𝓭𝓮𝓯𝓰𝓱𝓲𝓳𝓴𝓵𝓶𝓷𝓸𝓹𝓺𝓻𝓼𝓽𝓾𝓿𝔀𝔁𝔂𝔃"
-    "𝓐𝓑𝓒𝓓𝓔𝓕𝓖𝓗𝓘𝓙𝓚𝓛𝓜𝓝𝓞𝓟𝓠𝓡𝓢𝓣𝓤𝓥𝓦𝓧𝓨𝓩"
-)
+    if any(x in url for x in [
+        "history",
+        "culture",
+        "brain",
+        "ideas",
+        "topic",
+        "category",
+    ]):
 
-def make_fancy_title(line: str) -> str:
-    # латиница станет «красивой», кириллица останется обычной
-    return line.translate(FANCY_MAP)
+        articles = extract_article_links(url)
 
+        if articles:
+            url = random.choice(articles)
+            log.info(f"Article extracted: {url}")
 
-def apply_fancy_title_if_enabled(text: str) -> str:
-    if not USE_FANCY_TITLE:
-        return text
+    r = http_get(url)
 
-    lines = text.splitlines()
-    if not lines:
-        return text
+    if not r:
+        return None, None
 
-    # только первая непустая строка считается заголовком
-    for idx, line in enumerate(lines):
-        if line.strip():
-            lines[idx] = make_fancy_title(line)
-            break
+    text = extract_text(r.text)
 
-    return "\n".join(lines)
+    if len(text) < 300:
+        return None, None
 
+    return url, text
 
-# ---------- Prompt ----------
+# =========================
+# AI
+# =========================
 
-PROMPT_TEMPLATE = """\
-Ты редактор русскоязычного Telegram-канала "Любопытные факты".
+PROMPT = """
+Ты пишешь пост для Telegram канала "Что ты не знал".
 
-СЕГОДНЯШНЯЯ ТЕМА: {topic_name}
-СТИЛЬ ПОСТА: {style_hint}
+Формат:
 
-Тебе дают исходный текст (статья, заметка, новость).
+1 строка — короткий заголовок + 1 эмодзи
 
-Сделай один яркий пост для Telegram-канала в таком формате:
+2-3 предложения с интересным фактом
 
-1) Первая строка — цепляющий заголовок с 1–2 эмодзи. Без слова «Заголовок:».
-2) Далее — 1–3 коротких предложения с основным фактом.
-3) Пустая строка.
-4) Блок «Почему это важно» — 2–4 предложения простым разговорным языком.
-5) Пустая строка.
-6) Блок «Как применить» — 1–2 предложения с практичным выводом.
-7) Отдельной строкой — вопрос читателю.
-8) На СЛЕДУЮЩЕЙ строке — 2–4 хэштега по теме, все подряд в самом конце поста.
+пустая строка
 
-ДОПОЛНИТЕЛЬНЫЕ ТРЕБОВАНИЯ:
-- Пиши по-русски, живым, современным стилем.
-- Не копируй дословно текст источника, переформулируй.
-- Избегай клише вроде «твоя жизнь — это сумма привычек» и похожих общих фраз.
-- Сделай пост непохожим на типичную мотивационную цитату.
-- Используй эмодзи умеренно: 3–7 на весь пост, по смыслу.
-- Не используй слова «Заголовок», «Факт», «Почему это важно», «Что взять себе» в тексте.
-- Только обычный текст, без какого-либо форматирования.
-- Хэштеги всегда ставь на отдельной строке в самом конце поста, после вопроса.
-- Выбери один УЗКИЙ ракурс из исходного текста и строй весь пост вокруг него
-  (например, только модель 4 шагов, или только типичная ошибка, или только один сильный приём).
-- Учитывай стиль: {style_hint}. Если стиль «история» — сделай мини-историю/пример;
-  если «ошибка» — разберись, где люди чаще всего ошибаются;
-  если «инструкция» — дай пошаговый мини-план;
-  если «провокация» — начни с неожиданной мысли или вопроса.
+2-3 предложения объяснение
 
-Исходный текст:
-{article_text}
+пустая строка
+
+1-2 предложения практический вывод
+
+пустая строка
+
+вопрос читателю
+
+последняя строка — 3-4 хэштега
+
+Пиши коротко, живо, разговорным русским.
+Максимум 900 символов.
+
+Текст:
+{article}
 """
 
 
-def build_prompt(article_text: str, topic_name: str) -> str:
-    style = random.choice(POST_STYLES)
-    style_hint = {
-        "история": "мини-история/пример из жизни или условная ситуация",
-        "ошибка": "разбор типичной ошибки или заблуждения",
-        "инструкция": "короткая пошаговая инструкция",
-        "провокация": "провокационный или неожиданный заход",
-    }[style]
+def call_ai(cfg, article):
 
-    return PROMPT_TEMPLATE.format(
-        topic_name=topic_name,
-        article_text=article_text,
-        style_hint=style_hint,
-    )
+    payload = {
+        "model": cfg["ai_model"],
+        "messages": [
+            {"role": "user", "content": PROMPT.format(article=article)}
+        ],
+        "max_tokens": 600,
+    }
 
-
-# ---------- AI API ----------
-
-def call_ai_api(cfg: Config, prompt: str) -> str:
     headers = {
-        "Authorization": f"Bearer {cfg.ai_api_key}",
+        "Authorization": f"Bearer {cfg['ai_key']}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model": cfg.ai_model,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": cfg.ai_max_tokens,
-    }
 
-    logger.info(f"Calling AI API: {cfg.ai_url}")
-    resp = http_post_with_retries(cfg.ai_url, payload, headers, timeout=60)
+    r = requests.post(cfg["ai_url"], json=payload, headers=headers, timeout=60)
 
-    if resp is None:
-        logger.error("AI API returned no response")
-        return ""
+    data = r.json()
 
-    try:
-        data = resp.json()
-    except json.JSONDecodeError:
-        logger.error(f"AI API returned invalid JSON: {resp.text[:500]}")
-        return ""
+    return data["choices"][0]["message"]["content"].strip()
 
-    try:
-        return data["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, TypeError):
-        logger.error(f"Unexpected AI API response: {json.dumps(data)[:500]}")
-        return ""
+# =========================
+# TELEGRAM
+# =========================
 
 
-# ---------- Telegram ----------
+def send_telegram(cfg, text, url):
 
-def send_to_telegram(text: str, source_url: str, cfg: Config) -> bool:
-    """Send a plain-text post to a Telegram channel."""
-    # Оставляем web_page_preview включённым, чтобы тянулась картинка/превью ссылки [web:39][web:43]
-    message = trim_to_telegram_limit(f"{text.strip()}\n\n🔗 Источник: {source_url}")
+    msg = f"{text}\n\nИсточник: {url}"
 
-    api_url = f"https://api.telegram.org/bot{cfg.tg_bot_token}/sendMessage"
-    payload = {
-        "chat_id": cfg.tg_chat_id,
-        "text": message,
-        "disable_web_page_preview": False,  # подтягиваем картинку/описание
-        "disable_notification": False,
-    }
+    if len(msg) > TELEGRAM_LIMIT:
+        msg = msg[:TELEGRAM_LIMIT]
 
-    logger.info(f"Sending to Telegram ({len(message)} chars)")
-    resp = http_post_with_retries(api_url, payload, headers={}, timeout=20)
+    requests.post(
+        f"https://api.telegram.org/bot{cfg['tg_token']}/sendMessage",
+        json={
+            "chat_id": cfg["tg_chat"],
+            "text": msg,
+        },
+    )
 
-    if resp is None:
-        logger.error("Telegram sendMessage failed: no response")
-        return False
-
-    try:
-        resp.raise_for_status()
-        logger.info(f"Message sent to {cfg.tg_chat_id}")
-        return True
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"Telegram HTTP error: {e} — {resp.text[:500]}")
-        return False
+# =========================
+# SOURCE PICKER
+# =========================
 
 
-# ---------- Persistence ----------
+def pick_sources(all_links):
 
-def save_post(text: str, source_url: str, topic_name: str, output_dir: str) -> str:
-    os.makedirs(output_dir, exist_ok=True)
-    timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
-    path = os.path.join(output_dir, f"{timestamp}.md")
+    used = load_list(USED_LINKS_PATH)
+    dead = load_list(DEAD_LINKS_PATH)
 
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(f"# {topic_name}\n\n{text.strip()}\n\n🔗 Источник: {source_url}\n")
-
-    logger.info(f"Post saved: {path}")
-    return path
-
-
-def load_links(path: str = LINKS_PATH) -> Dict[str, List[str]]:
-    if not os.path.exists(path):
-        logger.error(f"{path} not found")
-        sys.exit(1)
-
-    links_by_topic: Dict[str, List[str]] = {t["id"]: [] for t in TOPICS}
-    current_topic: Optional[str] = None
-
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("[") and line.endswith("]"):
-                topic_id = line[1:-1].lower()
-                current_topic = topic_id if topic_id in links_by_topic else None
-                if current_topic:
-                    logger.info(f"Found topic section: {current_topic}")
-                continue
-            if current_topic and line.startswith("http"):
-                links_by_topic[current_topic].append(line)
-
-    return links_by_topic
-
-
-def load_used_links(path: str = USED_LINKS_PATH) -> set:
-    if not os.path.exists(path):
-        return set()
-    with open(path, "r", encoding="utf-8") as f:
-        return {line.strip() for line in f if line.strip()}
-
-
-def load_dead_links(path: str = DEAD_LINKS_PATH) -> set:
-    return load_used_links(path)
-
-
-def save_used_link(url: str, path: str = USED_LINKS_PATH) -> None:
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(url + "\n")
-
-
-def save_dead_link(url: str, path: str = DEAD_LINKS_PATH) -> None:
-    logger.info(f"Blacklisting dead URL: {url}")
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(url + "\n")
-
-
-# ---------- Topic rotation ----------
-
-def rotate_topic(cfg: Config) -> None:
-    old_name = TOPICS[cfg.current_topic_index]["name"]
-    cfg.current_topic_index = (cfg.current_topic_index + 1) % len(TOPICS)
-    save_config(cfg)
-    logger.info(f"Topic rotated: {old_name} → {TOPICS[cfg.current_topic_index]['name']}")
-
-
-def pick_unused_urls(cfg: Config, links_by_topic: Dict[str, List[str]], n: int = MAX_FETCH_ATTEMPTS) -> List[str]:
-    topic = TOPICS[cfg.current_topic_index]
-    all_links = links_by_topic.get(topic["id"], [])
-
-    if not all_links:
-        logger.warning(f"No links configured for topic '{topic['id']}'")
-        return []
-
-    excluded = load_used_links() | load_dead_links()
-    available = [u for u in all_links if u not in excluded]
-
-    if not available:
-        logger.warning(f"All links for topic '{topic['id']}' are used or dead")
-        return []
+    available = [x for x in all_links if x not in used and x not in dead]
 
     random.shuffle(available)
-    return available[:n]
+
+    return available[:MAX_FETCH_ATTEMPTS]
+
+# =========================
+# MAIN
+# =========================
 
 
-# ---------- Main ----------
+def main():
 
-def generate_post(url: str, topic_name: str, cfg: Config) -> bool:
-    article_text = fetch_article_text(url)  # may raise FetchError
-    if not article_text or len(article_text) < 100:
-        logger.warning(f"Skipping {url}: source text too short or empty")
-        return False
-
-    prompt = build_prompt(article_text, topic_name)
-    ai_text = call_ai_api(cfg, prompt)
-
-    if not ai_text or len(ai_text) < 100:
-        logger.warning(f"Skipping {url}: AI response too short")
-        return False
-
-    # применяем «красивый» шрифт только к заголовку, если включено
-    ai_text = apply_fancy_title_if_enabled(ai_text)
-
-    save_post(ai_text, url, topic_name, cfg.output_dir)
-    send_to_telegram(ai_text, url, cfg)
-    save_used_link(url)
-    return True
-
-
-def main() -> None:
-    logger.info("Starting Facts Generator...")
+    log.info("Starting generator")
 
     cfg = load_config()
-    links_by_topic = load_links()
-    topic = TOPICS[cfg.current_topic_index]
 
-    logger.info(f"Current topic: {topic['name']} (index {cfg.current_topic_index})")
+    links = load_links()
 
-    candidates = pick_unused_urls(cfg, links_by_topic)
-    if not candidates:
-        logger.warning("No available URLs — skipping this run.")
-        rotate_topic(cfg)
-        return
+    candidates = pick_sources(links)
 
-    success = False
     for url in candidates:
-        logger.info(f"Trying: {url}")
-        try:
-            success = generate_post(url, topic["name"], cfg)
-        except FetchError as e:
-            logger.error(f"Dead link detected: {e}")
-            save_dead_link(url)
+
+        log.info(f"Trying {url}")
+
+        article_url, text = fetch_article(url)
+
+        if not text:
+            save_line(DEAD_LINKS_PATH, url)
             continue
 
-        if success:
-            break
+        try:
 
-        logger.warning("Trying next candidate URL...")
+            post = call_ai(cfg, text)
 
-    logger.info("Post generated successfully." if success else "All candidates failed.")
-    rotate_topic(cfg)
-    logger.info("Done.")
+            send_telegram(cfg, post, article_url)
+
+            save_line(USED_LINKS_PATH, url)
+
+            log.info("Post sent")
+
+            return
+
+        except Exception as e:
+
+            log.error(e)
+
+    log.info("All sources failed")
 
 
 if __name__ == "__main__":
+
     main()
 
