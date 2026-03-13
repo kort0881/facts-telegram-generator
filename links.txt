@@ -1,7 +1,11 @@
 # Facts Generator - Source Links
+# Формат: категории в [скобках], ссылки начинаются с http, комментарии с #
+# Категориальные страницы автоматически парсятся на статьи
 
+# ==========================
+# ПРИВЫЧКИ / ПСИХОЛОГИЯ
+# ==========================
 [habits]
-
 https://jamesclear.com/three-steps-habit-change
 https://jamesclear.com/one-sentence-habits
 https://jamesclear.com/habits
@@ -9,54 +13,40 @@ https://jamesclear.com/implementation-intentions
 https://jamesclear.com/habit-stacking
 https://jamesclear.com/identity-based-habits
 https://jamesclear.com/motivation-rituals
-
 https://www.scientificamerican.com/article/how-to-build-new-habits/
 https://www.psychologytoday.com/intl/basics/habits
-
-# новые хорошие источники
 https://www.theguardian.com/lifeandstyle
 https://www.iflscience.com/brain/
 
-
+# ==========================
+# ПАМЯТЬ / МОЗГ
+# ==========================
 [memory]
-
 https://www.scientificamerican.com/article/how-memory-works/
 https://www.scientificamerican.com/article/what-is-the-memory-capacity/
-
 https://www.dana.org/article/memory-and-the-brain/
-
 https://www.psychologytoday.com/intl/basics/memory
-
-# новые
 https://www.newscientist.com/subject/brain/
 https://www.newscientist.com/subject/psychology/
 
-
+# ==========================
+# ИСТОРИЯ
+# ==========================
 [history]
-
 https://www.smithsonianmag.com/history/
 https://www.smithsonianmag.com/category/world-history/
-
 https://www.bbc.com/future
-
 https://www.archaeology.org/news
-
-# новые
 https://www.theguardian.com/science
 https://www.atlasobscura.com/articles
 
-
+# ==========================
+# ПРАВО / ОБЩЕСТВО / ИДЕИ
+# ==========================
 [laws]
-
 https://www.theatlantic.com/ideas/
-
 https://www.vox.com/the-big-idea
-
 https://aeon.co/essays
-
 https://www.mentalfloss.com/posts/weird-laws-united-states
-
-# новые
 https://www.bbc.com/future/big-ideas
-https://www.atlasobscura.com/articles
 
