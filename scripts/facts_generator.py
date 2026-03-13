@@ -150,7 +150,7 @@ def extract_article_links(url):
         ]):
             links.append(href)
 
-    return list(set(links))[:20]  # Увеличено с 10 до 20 для большего выбора
+    return list(set(links))[:20]  # увеличено с 10 до 20 для большего выбора
 
 
 def extract_text(html):
@@ -304,8 +304,7 @@ PROMPT = """
 
 Исходный текст статьи:
 {article}
-
-
+"""
 
 def call_ai(cfg, article):
     payload = {
