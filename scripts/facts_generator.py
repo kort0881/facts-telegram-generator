@@ -3,22 +3,12 @@
 """
 Facts Generator ULTRA
 Improved Telegram fact post generator
-
-Key improvements:
-- Uses ALL sources instead of one topic
-- Extracts real articles from category pages
-- Shorter context for better AI quality
-- Cleaner Telegram-style posts
-- Prevents reused URLs
-- Better logging
-- Updated prompt with concrete fact, practical вывод and examples
 """
 
 import os
 import random
 import requests
 import yaml
-import datetime
 import logging
 import sys
 from bs4 import BeautifulSoup
@@ -115,7 +105,6 @@ def save_line(path, line):
 
 
 def http_get(url):
-
     try:
         r = requests.get(
             url,
@@ -137,7 +126,6 @@ def http_get(url):
 
 
 def extract_article_links(url):
-
     r = http_get(url)
 
     if not r:
@@ -148,7 +136,6 @@ def extract_article_links(url):
     links = []
 
     for a in soup.find_all("a", href=True):
-
         href = a["href"]
 
         if href.startswith("/"):
@@ -163,37 +150,63 @@ def extract_article_links(url):
         ]):
             links.append(href)
 
-    return list(set(links))[:10]
+    return list(set(links))[:20]  # Увеличено с 10 до 20 для большего выбора
 
 
 def extract_text(html):
-
     soup = BeautifulSoup(html, "html.parser")
-
     paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
-
     text = "\n".join(paragraphs)
-
     return text[:MAX_ARTICLE_CHARS]
 
 
-def fetch_article(url):
+def fetch_article(url, used_urls, dead_urls):
+    """
+    Получает статью по url.
+    Если url — страница-категория, извлекает список статей и выбирает
+    одну из неиспользованных.
+    Возвращает (article_url, text) или (None, None).
+    """
 
-    if any(x in url for x in [
-        "history",
-        "culture",
-        "brain",
-        "ideas",
-        "topic",
-        "category",
-    ]):
+    is_category = any(x in url for x in [
+        "history", "culture", "brain", "ideas", "topic",
+        "category", "lifeandstyle", "subject", "essays",
+        "future", "posts", "articles",
+    ])
 
+    if is_category:
         articles = extract_article_links(url)
 
-        if articles:
-            url = random.choice(articles)
-            log.info(f"Article extracted: {url}")
+        # Фильтруем уже использованные и мёртвые ссылки
+        articles = [a for a in articles if a not in used_urls and a not in dead_urls]
 
+        if not articles:
+            log.info(f"No fresh articles found on category page: {url}")
+            return None, None
+
+        # Перемешиваем для случайности
+        random.shuffle(articles)
+
+        for article_url in articles:
+            log.info(f"Trying article: {article_url}")
+            r = http_get(article_url)
+
+            if not r:
+                save_line(DEAD_LINKS_PATH, article_url)
+                dead_urls.add(article_url)
+                continue
+
+            text = extract_text(r.text)
+
+            if len(text) < 300:
+                log.info(f"Too short, skipping: {article_url}")
+                continue
+
+            return article_url, text
+
+        return None, None
+
+    # Прямая ссылка на статью
     r = http_get(url)
 
     if not r:
@@ -303,7 +316,6 @@ Utahraptor был почти с современного медведя рост
 
 
 def call_ai(cfg, article):
-
     payload = {
         "model": cfg["ai_model"],
         "messages": [
@@ -318,9 +330,9 @@ def call_ai(cfg, article):
     }
 
     r = requests.post(cfg["ai_url"], json=payload, headers=headers, timeout=60)
+    r.raise_for_status()
 
     data = r.json()
-
     return data["choices"][0]["message"]["content"].strip()
 
 # =========================
@@ -329,19 +341,19 @@ def call_ai(cfg, article):
 
 
 def send_telegram(cfg, text, url):
-
     msg = f"{text}\n\nИсточник: {url}"
 
     if len(msg) > TELEGRAM_LIMIT:
         msg = msg[:TELEGRAM_LIMIT]
 
-    requests.post(
+    resp = requests.post(
         f"https://api.telegram.org/bot{cfg['tg_token']}/sendMessage",
         json={
             "chat_id": cfg["tg_chat"],
             "text": msg,
         },
     )
+    resp.raise_for_status()
 
 # =========================
 # SOURCE PICKER
@@ -349,15 +361,13 @@ def send_telegram(cfg, text, url):
 
 
 def pick_sources(all_links):
-
     used = load_list(USED_LINKS_PATH)
     dead = load_list(DEAD_LINKS_PATH)
 
     available = [x for x in all_links if x not in used and x not in dead]
 
     random.shuffle(available)
-
-    return available[:MAX_FETCH_ATTEMPTS]
+    return available[:MAX_FETCH_ATTEMPTS], used, dead
 
 # =========================
 # MAIN
@@ -365,45 +375,61 @@ def pick_sources(all_links):
 
 
 def main():
-
     log.info("Starting generator")
 
     cfg = load_config()
-
     links = load_links()
+    candidates, used_urls, dead_urls = pick_sources(links)
 
-    candidates = pick_sources(links)
+    if not candidates:
+        log.warning("No available sources. Clear used_links.txt to reset.")
+        return
 
     for url in candidates:
+        log.info(f"Trying source: {url}")
 
-        log.info(f"Trying {url}")
+        article_url, text = fetch_article(url, used_urls, dead_urls)
 
-        article_url, text = fetch_article(url)
+        if not article_url or not text:
+            # Если прямая ссылка — помечаем мёртвой, категорию не трогаем
+            is_category = any(x in url for x in [
+                "history", "culture", "brain", "ideas", "topic",
+                "category", "lifeandstyle", "subject", "essays",
+                "future", "posts", "articles",
+            ])
+            if not is_category:
+                save_line(DEAD_LINKS_PATH, url)
+                dead_urls.add(url)
+            continue
 
-        if not text:
-            save_line(DEAD_LINKS_PATH, url)
+        # Двойная проверка: статья не должна быть в used
+        if article_url in used_urls:
+            log.info(f"Article already used: {article_url}, skipping")
             continue
 
         try:
-
+            log.info(f"Generating post from: {article_url}")
             post = call_ai(cfg, text)
 
             send_telegram(cfg, post, article_url)
 
+            # Сохраняем оба: исходный url-источник и конкретную статью
             save_line(USED_LINKS_PATH, url)
+            used_urls.add(url)
 
-            log.info("Post sent")
+            if article_url != url:
+                save_line(USED_LINKS_PATH, article_url)
+                used_urls.add(article_url)
 
+            log.info("Post sent successfully")
             return
 
         except Exception as e:
+            log.error(f"Failed on {article_url}: {e}")
+            continue
 
-            log.error(e)
-
-    log.info("All sources failed")
+    log.warning("All sources exhausted or failed")
 
 
 if __name__ == "__main__":
-
     main()
-
