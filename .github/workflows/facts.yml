@@ -14,6 +14,7 @@ jobs:
     timeout-minutes: 15
 
     env:
+      # GitHub сам переведёт actions на Node 24, дополнительных env не нужно
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
       TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
@@ -62,4 +63,5 @@ jobs:
           git add output/posts/ config.yaml || true
           git commit -m "Add generated facts [skip ci]" || echo "Nothing to commit"
           git push || echo "Nothing to push"
+
 
