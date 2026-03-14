@@ -27,26 +27,26 @@ LINKS_PATH = "links.txt"
 USED_LINKS_PATH = "used_links.txt"
 DEAD_LINKS_PATH = "dead_links.txt"
 POSTS_LOG_PATH = "used_posts.txt"
-TOPICS_LOG_PATH = "used_topics.txt"   # NEW: тематический трекер
+TOPICS_LOG_PATH = "used_topics.txt"   # тематический трекер
 
 # =========================
 # SETTINGS
 # =========================
 
 MAX_ARTICLE_CHARS = 2500
-MAX_FETCH_ATTEMPTS = 12
+MAX_FETCH_ATTEMPTS = 50          # больше попыток, пусть лучше долго ищет нормальный факт
 HTTP_TIMEOUT = 20
 TELEGRAM_LIMIT = 4096
 
 # анти-дубликатор
-RECENT_SIMILARITY_THRESHOLD = 0.45   # понижено с 0.6 — было слишком мягко
-BIGRAM_SIMILARITY_THRESHOLD = 0.30   # NEW: отдельный порог для биграмм
-SIMILARITY_WINDOW = 50               # NEW: сравниваем только с последними N постами
-MAX_STORED_POSTS = 300               # сколько постов держать в used_posts.txt
+RECENT_SIMILARITY_THRESHOLD = 0.45
+BIGRAM_SIMILARITY_THRESHOLD = 0.30
+SIMILARITY_WINDOW = 50
+MAX_STORED_POSTS = 300
 
 # тематический трекер
-TOPIC_BLOCK_WINDOW = 10             # NEW: блокируем ту же тему на N постов вперёд
-TOPIC_TOP_WORDS = 8                 # NEW: сколько ключевых слов извлекаем из поста
+TOPIC_BLOCK_WINDOW = 10
+TOPIC_TOP_WORDS = 8
 
 # =========================
 # LOGGING
@@ -239,7 +239,7 @@ def fetch_article(url, used_urls, dead_urls):
 PROMPT = """
 Ты пишешь пост для Telegram-канала «Что ты не знал».
 
-Ты — автор живого, разговорного канала с фактами для широкой аудитории 18–35 лет. Твоя задача — рассказывать один яркий факт коротко, просто и по‑человечески, как другу в чате.
+Ты — автор живого, креативного канала с фактами для аудитории 18–35 лет. Твоя задача — рассказывать ОДИН яркий факт коротко, конкретно и по‑человечески, как другу в чате.
 
 Формат поста (строго соблюдай структуру и пустые строки):
 
@@ -249,33 +249,36 @@ PROMPT = """
 - Используй разные шаблоны: «Факт дня: …», «Мозг вскипает от этого: …», «Неочевидная штука про …», «Вот что скрывается за …».
 - Допускается использовать «Что ты не знал» максимум в каждом третьем посте.
 
-1 блок (2–3 предложения) — один конкретный факт из текста.
+1 блок (2–3 предложения) — один КОНКРЕТНЫЙ факт из текста.
 ЖЁСТКОЕ ТРЕБОВАНИЕ: в первом блоке ОБЯЗАТЕЛЬНО должен присутствовать хотя бы ОДИН из следующих элементов:
 - конкретное число или процент (например: «91% участников», «в 3 раза быстрее»);
 - год или диапазон дат (например: «в 1987 году», «с 2010 по 2020»);
-- имя конкретного человека или названия места;
+- имя конкретного человека или название места/проекта;
 - краткое описание эксперимента: что сделали и что получилось.
-Запрещены пустые формулировки без опоры на конкретный факт. Общие рассуждения («это важно», «учёные выяснили кое-что интересное») без конкретики НЕДОПУСТИМЫ.
+1 блок должен ощущаться как мини-история или сцена: не абстрактное «каждый год находят», а 1–2 конкретных эпизода (кто, где, что нашли/сделали).
+Запрещены пустые формулировки без опоры на конкретный факт.
 Можно добавить 1 уместный эмодзи в конце одного из предложений.
 
 пустая строка
 
 2 блок (2–3 предложения) — простое объяснение:
-- почему это важно, что это меняет в понимании темы;
+- почему этот факт важен, что он меняет в понимании темы;
+- можно сравнить «как мы обычно думаем» и «что показывает этот пример»;
 - используй разговорный тон: как будто объясняешь другу, а не пишешь статью;
 - можно добавить короткую живую фразу («звучит странно, но так и есть», «раньше об этом вообще не думали»).
 
 пустая строка
 
 3 блок (1–2 предложения) — практический вывод:
-- в формате мини-инструкции: начни делать X / обрати внимание на Y / перестань делать Z;
-- никаких общих абстракций, только то, что читатель может применить в жизни или в мышлении;
+- не реклама и не призыв «подписаться» или «следить за новостями»;
+- это личное, прикладное действие для читателя: как можно иначе думать/поступать в похожей ситуации;
+- никаких общих абстракций, только то, что читатель может реально применить;
 - можно добавить 1 эмодзи в конце предложения, если уместно.
 
 пустая строка
 
 Финал — вопрос читателю:
-- вопрос должен цеплять личный опыт или позицию («было ли у тебя так?», «смог бы ты так поступить?», «готов ли ты попробовать это на себе?»);
+- вопрос должен цеплять личный опыт или позицию («было ли у тебя так?», «смог бы ты так поступить?», «готов ли ты проверить это на себе?»);
 - избегай общих вопросов вроде «что вы думаете по этому поводу?»;
 - не начинай каждый вопрос словами «как ты думаешь» или «что бы ты сделал», меняй конструкции, используй разные подходы.
 
@@ -284,18 +287,13 @@ PROMPT = """
 - не дублируй одно и то же слово в разных формах;
 - не используй в хэштегах имя канала.
 
-Стиль:
-- Пиши коротко, живо, разговорным русским, без канцелярита и сложных оборотов.
+Стиль и длина:
+- Пиши коротко, живо, разговорным русским, без канцелярита и школьных формулировок.
 - В каждом посте должен быть ОДИН главный факт и ОДНА понятная мысль вокруг него.
+- Цель по длине поста — 700–900 символов (но не больше 900).
 - Чередуй короткие и чуть более длинные предложения, чтобы текст читался легко.
 - Можно использовать максимум 1–2 выделения **жирным** для самых важных слов, но не злоупотребляй.
 - Не копируй формулировки из примеров, придумывай свои.
-
-Эмодзи:
-- В заголовке — 1–2 ярких эмодзи.
-- В каждом блоке допускается не более 1 эмодзи.
-- На весь пост максимум 5 эмодзи.
-- Не используй один и тот же эмодзи во всех постах подряд, варьируй.
 
 Запрещённые формулировки — НИКОГДА не использовать:
 - «проливает новый свет», «мы можем глубже понять эпоху», «это открывает дискуссию»
@@ -304,14 +302,18 @@ PROMPT = """
 - «в современном мире это особенно актуально», «это важно для нас всех»
 - «это меняет картину», «по-честному, это меняет картинку»
 - «загугли», «узнай больше в интернете», «копнуть глубже», «если хочешь узнать больше»
-- Если хочешь сказать то же самое — перефразируй простыми, живыми словами.
-- Не превращай текст в сухую новость или научную заметку.
+- «начни интересоваться новостями», «следи за новостями», «будь в курсе последних открытий»
+- «подписывайся», «поделись с друзьями», «расскажи друзьям»
+Если хочешь сказать то же самое — перефразируй простыми, живыми словами.
+Не превращай текст в сухую новость или объявление.
 
 Разнообразие:
 - Не делай два поста подряд на одну тему с тем же углом.
 - Не начинай каждый пост одинаково. Меняй заходы: «Представь ситуацию…», «Обычно мы думаем, что…», «Есть одна странная деталь…».
 
-Допустимая длина всего поста — максимум 900 символов.
+Если в исходном тексте НЕТ яркой цифры, года, имени или конкретного кейса, из которого можно сделать интересный факт, лучше верни короткий ответ «SKIP», чем размытый пост.
+
+Допустимая длина всего поста — максимум 900 символов, цель 700–900.
 
 Твоя задача: по исходному тексту ниже придумать НОВЫЙ пост в этом стиле и структуре.
 
@@ -324,7 +326,6 @@ PROMPT = """
 # =========================
 
 BANNED_PHRASES = [
-    # старые
     "проливает новый свет",
     "мы можем глубже понять эпоху",
     "это открывает дискуссию",
@@ -335,23 +336,29 @@ BANNED_PHRASES = [
     "в наши дни это особенно актуально",
     "в современном мире",
     "как показывают исследования",
-    # новые — «вода» и шаблонные обороты
     "это меняет картину",
     "по-честному, это меняет картинку",
     "это важно для нас всех",
-    "в современном мире это особенно актуально",
     "это заставляет задуматься о многом",
     "это открывает новые горизонты",
     "сложно переоценить важность",
     "нельзя недооценивать",
     "это касается каждого из нас",
     "мы все сталкиваемся с этим",
-    # блок загугли — на случай если промпт всё равно его добавит
     "загугли",
     "если хочешь копнуть глубже",
     "если хочешь узнать больше",
     "узнай больше в интернете",
     "копнуть глубже",
+    "начни интересоваться новостями",
+    "начни интересоваться новостями археологии",
+    "обращай внимание на открытия последних лет",
+    "следи за новостями",
+    "будь в курсе последних открытий",
+    "подписывайся",
+    "подписывайся на",
+    "поделись с друзьями",
+    "расскажи друзьям",
 ]
 
 # =========================
@@ -377,7 +384,6 @@ STOP_WORDS = {
 
 
 def normalize_text(s: str) -> Set[str]:
-    """Множество уникальных значимых слов (>3 символов) для Jaccard."""
     s = s.lower()
     s = re.sub(r"[^a-zа-я0-9ё]+", " ", s)
     words = [w for w in s.split() if len(w) > 3 and w not in STOP_WORDS]
@@ -385,15 +391,13 @@ def normalize_text(s: str) -> Set[str]:
 
 
 def get_bigrams(s: str) -> Set[Tuple[str, str]]:
-    """Множество биграмм из значимых слов."""
-    words = sorted(normalize_text(s))   # сортируем для инвариантности порядка
+    words = sorted(normalize_text(s))
     if len(words) < 2:
         return set()
     return {(words[i], words[i + 1]) for i in range(len(words) - 1)}
 
 
 def extract_topic_words(s: str, top_n: int = TOPIC_TOP_WORDS) -> List[str]:
-    """Извлекает топ-N самых частых значимых слов — «тема» поста."""
     s = s.lower()
     s = re.sub(r"[^a-zа-я0-9ё]+", " ", s)
     words = [w for w in s.split() if len(w) > 4 and w not in STOP_WORDS]
@@ -406,7 +410,6 @@ def extract_topic_words(s: str, top_n: int = TOPIC_TOP_WORDS) -> List[str]:
 
 
 def jaccard_similarity(a: str, b: str) -> float:
-    """Jaccard по множеству слов."""
     sa = normalize_text(a)
     sb = normalize_text(b)
     if not sa or not sb:
@@ -417,7 +420,6 @@ def jaccard_similarity(a: str, b: str) -> float:
 
 
 def bigram_jaccard(a: str, b: str) -> float:
-    """Jaccard по биграммам — ловит похожие фразы."""
     ba = get_bigrams(a)
     bb = get_bigrams(b)
     if not ba or not bb:
@@ -428,7 +430,6 @@ def bigram_jaccard(a: str, b: str) -> float:
 
 
 def combined_similarity(a: str, b: str) -> float:
-    """Взвешенная комбинация: 60% слова + 40% биграммы."""
     return 0.6 * jaccard_similarity(a, b) + 0.4 * bigram_jaccard(a, b)
 
 # =========================
@@ -458,10 +459,6 @@ def save_post(text: str, path: str = POSTS_LOG_PATH):
 
 
 def load_recent_topics(path: str = TOPICS_LOG_PATH) -> List[List[str]]:
-    """
-    Загружает список тем последних постов.
-    Каждая тема — список ключевых слов, сохранённый как JSON-строка.
-    """
     if not os.path.exists(path):
         return []
     result = []
@@ -478,10 +475,8 @@ def load_recent_topics(path: str = TOPICS_LOG_PATH) -> List[List[str]]:
 
 
 def save_topic(words: List[str], path: str = TOPICS_LOG_PATH):
-    """Добавляет тему нового поста и обрезает старые."""
     topics = load_recent_topics(path)
     topics.append(words)
-    # держим только последние TOPIC_BLOCK_WINDOW * 3 тем
     max_topics = TOPIC_BLOCK_WINDOW * 3
     if len(topics) > max_topics:
         topics = topics[-max_topics:]
@@ -491,16 +486,10 @@ def save_topic(words: List[str], path: str = TOPICS_LOG_PATH):
 
 
 def is_topic_repeated(new_post: str, recent_topics: List[List[str]]) -> bool:
-    """
-    Возвращает True, если тема нового поста слишком близка
-    к одной из тем последних TOPIC_BLOCK_WINDOW постов.
-    Критерий: пересечение ключевых слов >= 50%.
-    """
     new_words = set(extract_topic_words(new_post))
     if not new_words:
         return False
 
-    # сравниваем только с последними N темами
     window = recent_topics[-TOPIC_BLOCK_WINDOW:]
 
     for old_words in window:
@@ -508,7 +497,6 @@ def is_topic_repeated(new_post: str, recent_topics: List[List[str]]) -> bool:
         if not old_set:
             continue
         overlap = len(new_words & old_set)
-        # доля пересечения относительно меньшего множества
         ratio = overlap / min(len(new_words), len(old_set))
         if ratio >= 0.5:
             log.info(
@@ -530,11 +518,6 @@ def is_too_similar_to_previous(
     word_threshold: float = RECENT_SIMILARITY_THRESHOLD,
     bigram_threshold: float = BIGRAM_SIMILARITY_THRESHOLD,
 ) -> bool:
-    """
-    Проверяет сходство нового поста с окном последних SIMILARITY_WINDOW постов.
-    Срабатывает если превышен ЛЮБОЙ из двух порогов.
-    """
-    # берём только последние N постов — актуальнее и быстрее
     window = old_posts[-SIMILARITY_WINDOW:]
 
     for old in window:
@@ -565,27 +548,26 @@ def contains_banned_phrases(text: str) -> bool:
 # POST CLEANUP & CONCRETENESS CHECK
 # =========================
 
-# Паттерны для вырезания блока «загугли» и похожих
 _GOOGLE_HINT_PATTERNS = re.compile(
     r"(если хочешь (копнуть глубже|узнать больше)|загугли|узнай больше в интернете"
     r"|копнуть глубже|поищи в интернете)",
     re.IGNORECASE,
 )
 
+_BAD_CTA_PATTERNS = re.compile(
+    r"(начни интересоваться новостями|обращай внимание на открытия последних лет"
+    r"|следи за новостями|будь в курсе последних открытий"
+    r"|подписывайся|поделись с друзьями|расскажи друзьям)",
+    re.IGNORECASE,
+)
+
 
 def strip_google_hint(text: str) -> str:
-    """
-    Обрезает текст с момента появления блока «загугли» / «копнуть глубже»
-    до конца. Возвращает очищённый текст.
-    """
     match = _GOOGLE_HINT_PATTERNS.search(text)
     if not match:
         return text
 
     cut_pos = match.start()
-
-    # Откатываемся назад до ближайшего переноса строки, чтобы не резать
-    # середину предложения
     newline_pos = text.rfind("\n", 0, cut_pos)
     if newline_pos != -1:
         cut_pos = newline_pos
@@ -595,15 +577,48 @@ def strip_google_hint(text: str) -> str:
     return cleaned
 
 
+def strip_calls_to_action(text: str) -> str:
+    lines = text.split("\n")
+    cleaned = []
+    for line in lines:
+        if _BAD_CTA_PATTERNS.search(line):
+            continue
+        cleaned.append(line.rstrip())
+    return "\n".join(cleaned).strip()
+
+
 def looks_too_vague(text: str) -> bool:
-    """
-    Возвращает True, если в посте нет ни одной цифры и ни одного года
-    формата 19xx/20xx — признак «философского» поста без конкретики.
-    """
     has_digit = bool(re.search(r"\d", text))
     has_year = bool(re.search(r"19\d{2}|20\d{2}", text))
     return not (has_digit or has_year)
 
+
+def has_strong_fact(text: str) -> bool:
+    years = re.findall(r"19\d{2}|20\d{2}", text)
+    digits = re.findall(r"\d", text)
+    return len(years) >= 1 and len(digits) >= 3
+
+
+def looks_like_announcement(text: str) -> bool:
+    if len(text) < 350:
+        return True
+
+    sentences = re.split(r"[.!?]+", text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    if len(sentences) < 5:
+        return True
+
+    first_line = text.strip().split("\n", 1)[0].lower()
+    if "каждый год" in first_line or "часто происходит" in first_line:
+        return True
+
+    return False
+
+
+def normalize_blank_lines(text: str) -> str:
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    lines = [line.rstrip() for line in text.split("\n")]
+    return "\n".join(lines)
 
 # =========================
 # AI CALL
@@ -652,10 +667,7 @@ def send_telegram(cfg, text, url):
     )
     resp.raise_for_status()
 
-    # логируем текст поста для анти-дублей
     save_post(text)
-
-    # логируем тему поста
     topic_words = extract_topic_words(text)
     save_topic(topic_words)
     log.info(f"Saved topic keywords: {topic_words}")
@@ -717,24 +729,30 @@ def main():
             log.info(f"Generating post from: {article_url}")
             post = call_ai(cfg, text)
 
-            # 0a. вырезаем блок «загугли» если модель всё равно его добавила
             post = strip_google_hint(post)
+            post = strip_calls_to_action(post)
+            post = normalize_blank_lines(post)
 
-            if len(post) < 200:
-                log.info("Generated post is too short, skipping")
+            if len(post) < 500:
+                log.info(f"Generated post too short ({len(post)} chars), skipping")
                 continue
 
-            # 0b. проверка на конкретность — должна быть хоть одна цифра или год
             if looks_too_vague(post):
                 log.info("Post has no concrete data (numbers/years), skipping as vague")
                 continue
 
-            # 1. фильтр банальных фраз
+            if not has_strong_fact(post):
+                log.info("Post has no strong fact (years+numbers), skipping")
+                continue
+
+            if looks_like_announcement(post):
+                log.info("Post looks like shallow announcement, skipping")
+                continue
+
             if contains_banned_phrases(post):
                 log.info("Post contains banned phrases, skipping")
                 continue
 
-            # 2. анти-дубликатор по тексту (слова + биграммы)
             if is_too_similar_to_previous(post, old_posts):
                 log.info("Generated post is too similar to previous ones, skipping")
                 save_line(USED_LINKS_PATH, url)
@@ -744,7 +762,6 @@ def main():
                     used_urls.add(article_url)
                 continue
 
-            # 3. тематический трекер — блокируем ту же тему
             if is_topic_repeated(post, recent_topics):
                 log.info("Topic already covered recently, skipping")
                 save_line(USED_LINKS_PATH, url)
@@ -754,10 +771,8 @@ def main():
                     used_urls.add(article_url)
                 continue
 
-            # отправка
             send_telegram(cfg, post, article_url)
 
-            # сохраняем источники
             save_line(USED_LINKS_PATH, url)
             used_urls.add(url)
 
