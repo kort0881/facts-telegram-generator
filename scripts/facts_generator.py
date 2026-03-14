@@ -11,6 +11,11 @@ import requests
 import yaml
 import logging
 import sys
+import re
+import json
+from typing import List, Set, Dict, Tuple
+from collections import Counter
+
 from bs4 import BeautifulSoup
 
 # =========================
@@ -21,6 +26,8 @@ CONFIG_PATH = "config.yaml"
 LINKS_PATH = "links.txt"
 USED_LINKS_PATH = "used_links.txt"
 DEAD_LINKS_PATH = "dead_links.txt"
+POSTS_LOG_PATH = "used_posts.txt"
+TOPICS_LOG_PATH = "used_topics.txt"   # NEW: тематический трекер
 
 # =========================
 # SETTINGS
@@ -30,6 +37,16 @@ MAX_ARTICLE_CHARS = 2500
 MAX_FETCH_ATTEMPTS = 12
 HTTP_TIMEOUT = 20
 TELEGRAM_LIMIT = 4096
+
+# анти-дубликатор
+RECENT_SIMILARITY_THRESHOLD = 0.45   # понижено с 0.6 — было слишком мягко
+BIGRAM_SIMILARITY_THRESHOLD = 0.30   # NEW: отдельный порог для биграмм
+SIMILARITY_WINDOW = 50               # NEW: сравниваем только с последними N постами
+MAX_STORED_POSTS = 300               # сколько постов держать в used_posts.txt
+
+# тематический трекер
+TOPIC_BLOCK_WINDOW = 10             # NEW: блокируем ту же тему на N постов вперёд
+TOPIC_TOP_WORDS = 8                 # NEW: сколько ключевых слов извлекаем из поста
 
 # =========================
 # LOGGING
@@ -150,7 +167,7 @@ def extract_article_links(url):
         ]):
             links.append(href)
 
-    return list(set(links))[:20]  # увеличено с 10 до 20 для большего выбора
+    return list(set(links))[:20]
 
 
 def extract_text(html):
@@ -176,15 +193,12 @@ def fetch_article(url, used_urls, dead_urls):
 
     if is_category:
         articles = extract_article_links(url)
-
-        # Фильтруем уже использованные и мёртвые ссылки
         articles = [a for a in articles if a not in used_urls and a not in dead_urls]
 
         if not articles:
             log.info(f"No fresh articles found on category page: {url}")
             return None, None
 
-        # Перемешиваем для случайности
         random.shuffle(articles)
 
         for article_url in articles:
@@ -206,7 +220,6 @@ def fetch_article(url, used_urls, dead_urls):
 
         return None, None
 
-    # Прямая ссылка на статью
     r = http_get(url)
 
     if not r:
@@ -220,7 +233,7 @@ def fetch_article(url, used_urls, dead_urls):
     return url, text
 
 # =========================
-# AI
+# AI PROMPT
 # =========================
 
 PROMPT = """
@@ -298,6 +311,10 @@ PROMPT = """
 - Если исходный текст про тему, которая уже была, выбирай другой аспект: новую цифру, необычный пример, редкий кейс, а не пересказывай то же самое иначе.
 - Не начинай каждый пост одинаково («Исследования показали, что…», «Недавно учёные обнаружили…»). Меняй заходы: «Представь ситуацию…», «Обычно мы думаем, что…», «Есть одна странная деталь…».
 
+Новизна:
+- Каждый новый пост должен звучать как новая история, а не перефразирование предыдущего.
+- Избегай повторения одних и тех же формулировок между разными постами.
+
 Допустимая длина всего поста (без источника) — максимум 900 символов.
 
 Твоя задача: по исходному тексту ниже придумать НОВЫЙ пост в этом стиле и структуре, с ОДНИМ главным фактом, понятным объяснением и практическим выводом.
@@ -306,6 +323,235 @@ PROMPT = """
 {article}
 """
 
+# =========================
+# BANNED PHRASES
+# =========================
+
+BANNED_PHRASES = [
+    "проливает новый свет",
+    "мы можем глубже понять эпоху",
+    "это открывает дискуссию",
+    "позволяет лучше понять наши корни",
+    "это важно для нашего благополучия",
+    "новые данные показывают",
+    "это поднимает важные вопросы",
+    "в наши дни это особенно актуально",
+    "в современном мире",
+    "как показывают исследования",
+]
+
+# =========================
+# STOP-WORDS ДЛЯ ТЕМАТИЧЕСКОГО ТРЕКЕРА
+# =========================
+
+STOP_WORDS = {
+    "что", "это", "как", "для", "или", "при", "так", "все", "они",
+    "был", "она", "его", "её", "он", "мы", "вы", "но", "да", "нет",
+    "уже", "ещё", "даже", "если", "тоже", "есть", "очень", "ведь",
+    "себя", "свой", "своя", "своё", "свои", "тот", "эта", "этот",
+    "не", "ни", "же", "бы", "по", "до", "из", "без", "над", "под",
+    "через", "между", "после", "перед", "среди", "хотя", "когда",
+    "который", "которая", "которое", "которые", "можно", "нужно",
+    "должен", "может", "будет", "были", "быть", "стало", "стал",
+    "одно", "один", "одна", "раз", "два", "три", "лет", "год",
+    "загугли", "глубже", "хочешь", "копнуть", "если",
+}
+
+# =========================
+# TEXT NORMALISATION
+# =========================
+
+
+def normalize_text(s: str) -> Set[str]:
+    """Множество уникальных значимых слов (>3 символов) для Jaccard."""
+    s = s.lower()
+    s = re.sub(r"[^a-zа-я0-9ё]+", " ", s)
+    words = [w for w in s.split() if len(w) > 3 and w not in STOP_WORDS]
+    return set(words)
+
+
+def get_bigrams(s: str) -> Set[Tuple[str, str]]:
+    """Множество биграмм из значимых слов."""
+    words = sorted(normalize_text(s))   # сортируем для инвариантности порядка
+    if len(words) < 2:
+        return set()
+    return {(words[i], words[i + 1]) for i in range(len(words) - 1)}
+
+
+def extract_topic_words(s: str, top_n: int = TOPIC_TOP_WORDS) -> List[str]:
+    """Извлекает топ-N самых частых значимых слов — «тема» поста."""
+    s = s.lower()
+    s = re.sub(r"[^a-zа-я0-9ё]+", " ", s)
+    words = [w for w in s.split() if len(w) > 4 and w not in STOP_WORDS]
+    counted = Counter(words)
+    return [w for w, _ in counted.most_common(top_n)]
+
+# =========================
+# SIMILARITY METRICS
+# =========================
+
+
+def jaccard_similarity(a: str, b: str) -> float:
+    """Jaccard по множеству слов."""
+    sa = normalize_text(a)
+    sb = normalize_text(b)
+    if not sa or not sb:
+        return 0.0
+    inter = len(sa & sb)
+    union = len(sa | sb)
+    return inter / union if union else 0.0
+
+
+def bigram_jaccard(a: str, b: str) -> float:
+    """Jaccard по биграммам — ловит похожие фразы."""
+    ba = get_bigrams(a)
+    bb = get_bigrams(b)
+    if not ba or not bb:
+        return 0.0
+    inter = len(ba & bb)
+    union = len(ba | bb)
+    return inter / union if union else 0.0
+
+
+def combined_similarity(a: str, b: str) -> float:
+    """Взвешенная комбинация: 60% слова + 40% биграммы."""
+    return 0.6 * jaccard_similarity(a, b) + 0.4 * bigram_jaccard(a, b)
+
+# =========================
+# POSTS STORAGE
+# =========================
+
+
+def load_posts(path: str = POSTS_LOG_PATH) -> List[str]:
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        return [line.strip() for line in f if line.strip()]
+
+
+def save_post(text: str, path: str = POSTS_LOG_PATH):
+    posts = load_posts(path)
+    posts.append(text.replace("\n", " \\n "))
+    if len(posts) > MAX_STORED_POSTS:
+        posts = posts[-MAX_STORED_POSTS:]
+    with open(path, "w", encoding="utf-8") as f:
+        for p in posts:
+            f.write(p + "\n")
+
+# =========================
+# TOPIC TRACKER
+# =========================
+
+
+def load_recent_topics(path: str = TOPICS_LOG_PATH) -> List[List[str]]:
+    """
+    Загружает список тем последних постов.
+    Каждая тема — список ключевых слов, сохранённый как JSON-строка.
+    """
+    if not os.path.exists(path):
+        return []
+    result = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                result.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return result
+
+
+def save_topic(words: List[str], path: str = TOPICS_LOG_PATH):
+    """Добавляет тему нового поста и обрезает старые."""
+    topics = load_recent_topics(path)
+    topics.append(words)
+    # держим только последние TOPIC_BLOCK_WINDOW * 3 тем
+    max_topics = TOPIC_BLOCK_WINDOW * 3
+    if len(topics) > max_topics:
+        topics = topics[-max_topics:]
+    with open(path, "w", encoding="utf-8") as f:
+        for t in topics:
+            f.write(json.dumps(t, ensure_ascii=False) + "\n")
+
+
+def is_topic_repeated(new_post: str, recent_topics: List[List[str]]) -> bool:
+    """
+    Возвращает True, если тема нового поста слишком близка
+    к одной из тем последних TOPIC_BLOCK_WINDOW постов.
+    Критерий: пересечение ключевых слов >= 50%.
+    """
+    new_words = set(extract_topic_words(new_post))
+    if not new_words:
+        return False
+
+    # сравниваем только с последними N темами
+    window = recent_topics[-TOPIC_BLOCK_WINDOW:]
+
+    for old_words in window:
+        old_set = set(old_words)
+        if not old_set:
+            continue
+        overlap = len(new_words & old_set)
+        # доля пересечения относительно меньшего множества
+        ratio = overlap / min(len(new_words), len(old_set))
+        if ratio >= 0.5:
+            log.info(
+                f"Topic overlap {ratio:.2f} with recent post "
+                f"(shared: {new_words & old_set})"
+            )
+            return True
+
+    return False
+
+# =========================
+# DUPLICATE & BANALITY CHECKS
+# =========================
+
+
+def is_too_similar_to_previous(
+    new_post: str,
+    old_posts: List[str],
+    word_threshold: float = RECENT_SIMILARITY_THRESHOLD,
+    bigram_threshold: float = BIGRAM_SIMILARITY_THRESHOLD,
+) -> bool:
+    """
+    Проверяет сходство нового поста с окном последних SIMILARITY_WINDOW постов.
+    Срабатывает если превышен ЛЮБОЙ из двух порогов.
+    """
+    # берём только последние N постов — актуальнее и быстрее
+    window = old_posts[-SIMILARITY_WINDOW:]
+
+    for old in window:
+        if not old:
+            continue
+
+        word_sim = jaccard_similarity(new_post, old)
+        if word_sim >= word_threshold:
+            log.info(f"Word similarity {word_sim:.2f} >= {word_threshold} — duplicate")
+            return True
+
+        bigram_sim = bigram_jaccard(new_post, old)
+        if bigram_sim >= bigram_threshold:
+            log.info(f"Bigram similarity {bigram_sim:.2f} >= {bigram_threshold} — duplicate")
+            return True
+
+    return False
+
+
+def contains_banned_phrases(text: str) -> bool:
+    lower = text.lower()
+    for phrase in BANNED_PHRASES:
+        if phrase in lower:
+            return True
+    return False
+
+# =========================
+# AI CALL
+# =========================
+
+
 def call_ai(cfg, article):
     payload = {
         "model": cfg["ai_model"],
@@ -313,6 +559,8 @@ def call_ai(cfg, article):
             {"role": "user", "content": PROMPT.format(article=article)}
         ],
         "max_tokens": 600,
+        "temperature": 0.9,
+        "top_p": 0.9,
     }
 
     headers = {
@@ -346,6 +594,14 @@ def send_telegram(cfg, text, url):
     )
     resp.raise_for_status()
 
+    # логируем текст поста для анти-дублей
+    save_post(text)
+
+    # логируем тему поста
+    topic_words = extract_topic_words(text)
+    save_topic(topic_words)
+    log.info(f"Saved topic keywords: {topic_words}")
+
 # =========================
 # SOURCE PICKER
 # =========================
@@ -376,13 +632,15 @@ def main():
         log.warning("No available sources. Clear used_links.txt to reset.")
         return
 
+    old_posts = load_posts()
+    recent_topics = load_recent_topics()
+
     for url in candidates:
         log.info(f"Trying source: {url}")
 
         article_url, text = fetch_article(url, used_urls, dead_urls)
 
         if not article_url or not text:
-            # Если прямая ссылка — помечаем мёртвой, категорию не трогаем
             is_category = any(x in url for x in [
                 "history", "culture", "brain", "ideas", "topic",
                 "category", "lifeandstyle", "subject", "essays",
@@ -393,7 +651,6 @@ def main():
                 dead_urls.add(url)
             continue
 
-        # Двойная проверка: статья не должна быть в used
         if article_url in used_urls:
             log.info(f"Article already used: {article_url}, skipping")
             continue
@@ -402,9 +659,39 @@ def main():
             log.info(f"Generating post from: {article_url}")
             post = call_ai(cfg, text)
 
+            if len(post) < 200:
+                log.info("Generated post is too short, skipping")
+                continue
+
+            # 1. фильтр банальных фраз
+            if contains_banned_phrases(post):
+                log.info("Post contains banned phrases, skipping")
+                continue
+
+            # 2. анти-дубликатор по тексту (слова + биграммы)
+            if is_too_similar_to_previous(post, old_posts):
+                log.info("Generated post is too similar to previous ones, skipping")
+                save_line(USED_LINKS_PATH, url)
+                used_urls.add(url)
+                if article_url != url:
+                    save_line(USED_LINKS_PATH, article_url)
+                    used_urls.add(article_url)
+                continue
+
+            # 3. тематический трекер — блокируем ту же тему
+            if is_topic_repeated(post, recent_topics):
+                log.info("Topic already covered recently, skipping")
+                save_line(USED_LINKS_PATH, url)
+                used_urls.add(url)
+                if article_url != url:
+                    save_line(USED_LINKS_PATH, article_url)
+                    used_urls.add(article_url)
+                continue
+
+            # отправка
             send_telegram(cfg, post, article_url)
 
-            # Сохраняем оба: исходный url-источник и конкретную статью
+            # сохраняем источники
             save_line(USED_LINKS_PATH, url)
             used_urls.add(url)
 
