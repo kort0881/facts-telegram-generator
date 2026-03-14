@@ -17,6 +17,13 @@ https://www.scientificamerican.com/article/how-to-build-new-habits/
 https://www.psychologytoday.com/intl/basics/habits
 https://www.theguardian.com/lifeandstyle
 https://www.iflscience.com/brain/
+https://www.verywellmind.com
+https://greatergood.berkeley.edu
+https://www.apa.org/topics
+https://www.psychologicalscience.org/observer
+https://www.bps.org.uk/psychologist
+https://www.mindbodygreen.com/mindfulness
+https://www.americanscientist.org/topics/psychology
 
 # ==========================
 # ПАМЯТЬ / МОЗГ
@@ -28,6 +35,11 @@ https://www.dana.org/article/memory-and-the-brain/
 https://www.psychologytoday.com/intl/basics/memory
 https://www.newscientist.com/subject/brain/
 https://www.newscientist.com/subject/psychology/
+https://www.scientificamerican.com/brain
+https://www.livescience.com/human-brain
+https://www.bbc.com/future/columns/brain-hacks
+https://www.nature.com/subjects/neuroscience
+https://www.snexplores.org
 
 # ==========================
 # ИСТОРИЯ
@@ -35,10 +47,18 @@ https://www.newscientist.com/subject/psychology/
 [history]
 https://www.smithsonianmag.com/history/
 https://www.smithsonianmag.com/category/world-history/
-https://www.bbc.com/future
 https://www.archaeology.org/news
-https://www.theguardian.com/science
 https://www.atlasobscura.com/articles
+https://www.worldhistory.org
+https://www.historytoday.com
+https://www.historyextra.com
+https://www.livescience.com/history
+https://was.media
+https://arzamas.academy
+https://www.bbc.com/news/topics/cyx1krnw38vt/history
+https://www.theguardian.com/science
+https://www.bbc.com/future
+https://www.smithsonianmag.com
 
 # ==========================
 # ПРАВО / ОБЩЕСТВО / ИДЕИ
@@ -49,4 +69,79 @@ https://www.vox.com/the-big-idea
 https://aeon.co/essays
 https://www.mentalfloss.com/posts/weird-laws-united-states
 https://www.bbc.com/future/big-ideas
+https://www.newyorker.com/news
+https://www.nytimes.com/section/opinion
+https://www.brookings.edu/topics/democracy/
+https://www.vox.com/policy
+https://www.theguardian.com/world
+https://aeon.co/politics
+https://www.pewresearch.org
+
+# ==========================
+# НАУКА / ФАН-ФАКТЫ
+# ==========================
+[science_facts]
+https://www.bbcsciencefocus.com/science/fun-facts
+https://www.livescience.com/science-facts
+https://www.iflscience.com
+https://www.science.org/news
+https://www.sciencenews.org
+https://www.nplus1.ru
+https://www.americanscientist.org
+https://www.rd.com/list/interesting-facts/
+https://www.parade.com/weird-facts
+https://www.sciencejournalforkids.org
+https://www.sciencefocus.com
+
+# ==========================
+# ПОВСЕДНЕВНАЯ ЖИЗНЬ / ЛАЙФХАКИ
+# ==========================
+[everyday_life]
+https://lifehacker.com
+https://www.nytimes.com/section/well
+https://www.theguardian.com/lifeandstyle
+https://www.wired.com/category/science/
+https://www.bbc.com/future/wellness
+https://www.bbc.com/future/worklife
+
+# ==========================
+# ОТНОШЕНИЯ / СОЦИАЛКА
+# ==========================
+[relationships]
+https://www.psychologytoday.com/intl/topics/relationships
+https://www.gottman.com/blog
+https://www.apa.org/topics/relationships
+https://greatergood.berkeley.edu/topic/relationships
+https://www.psychologytoday.com/intl/topics/parenting
+
+# ==========================
+# ЗДОРОВЬЕ / ДОЛГОЛЕТИЕ
+# ==========================
+[health]
+https://www.scientificamerican.com/health
+https://www.livescience.com/health
+https://www.bbc.com/future/health
+https://www.nationalgeographic.com/science
+https://www.health.harvard.edu/blog
+https://www.psychologytoday.com/intl/topics/health
+
+# ==========================
+# КАРЬЕРА / ПРОДУКТИВНОСТЬ
+# ==========================
+[productivity]
+https://hbr.org
+https://www.fastcompany.com/co-exist
+https://www.nytimes.com/section/business
+https://lifehacker.com/tag/productivity
+https://www.ted.com/topics/productivity
+
+# ==========================
+# СТРАННЫЕ / НЕОЧЕВИДНЫЕ ФАКТЫ
+# ==========================
+[weird]
+https://www.parade.com/weird-facts
+https://www.boredpanda.com/category/funny/
+https://www.rd.com/list/interesting-facts/
+https://www.atlasobscura.com/places
+https://www.mentalfloss.com
 
