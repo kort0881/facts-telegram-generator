@@ -856,6 +856,9 @@ def main() -> None:
         log.error("No links loaded – check links.txt")
         return
 
+    # чтобы не ходить всегда по одним и тем же первым ссылкам
+    random.shuffle(links)
+
     candidates, used_urls, dead_urls = pick_sources(links)
     if not candidates:
         log.warning("No available sources. Clear used_links.txt to reset.")
@@ -866,6 +869,7 @@ def main() -> None:
     recent_domains: List[str] = []
     MAX_RECENT_DOMAINS = 5
 
+    # 1 пост за запуск, но ищем по всем кандидатам, пока не найдём нормальный
     for url in candidates:
         domain = urlparse(url).netloc
         if domain in recent_domains:
@@ -891,12 +895,15 @@ def main() -> None:
             continue
 
         try:
-            log.info(f"Generating post from: {article_url}")
-            post = call_ai(cfg, text)
+    log.info(f"Generating post from: {article_url}")
+    post = call_ai(cfg, text)
+    time.sleep(2)
 
-            post = strip_google_hint(post)
-            post = strip_calls_to_action(post)
-            post = normalize_blank_lines(post)
+    post = strip_google_hint(post)
+    post = strip_calls_to_action(post)
+    post = normalize_blank_lines(post)
+    ...
+
 
             if post.strip().upper().startswith("SKIP"):
                 log.info("AI returned SKIP — no good fact found in article")
@@ -961,6 +968,7 @@ def main() -> None:
                 mark_used(url, article_url, used_urls)
                 continue
 
+            # === ВАЖНО: здесь 1 пост за запуск ===
             send_telegram(cfg, post, article_url)
             mark_used(url, article_url, used_urls)
 
@@ -969,15 +977,15 @@ def main() -> None:
                 recent_domains.pop(0)
 
             log.info("Post processed successfully")
-            return
+            break  # <-- вместо return, чтобы цикл завершить, но main() не выходил аварийно
 
         except Exception as e:
             log.error(f"Failed on {article_url}: {e}")
             continue
-
-    log.warning("All sources exhausted or failed")
+    else:
+        # если цикл прошёл все candidates и ни один пост не подошёл
+        log.warning("All sources exhausted or failed")
 
 
 if __name__ == "__main__":
     main()
-
