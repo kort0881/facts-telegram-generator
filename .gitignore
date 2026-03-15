@@ -1,4 +1,4 @@
-# Config with secrets
+# Config with secrets (создаётся на лету в Actions — не нужен в репо)
 config.yaml
 
 # Python
@@ -42,10 +42,17 @@ env/
 *.log.*
 facts_generator.log
 
-# Output
+# Output (только готовые md-файлы и raw, state-файлы НЕ игнорируем)
 output/posts/*.md
 output/raw/
 
 # Environment
 .env
 .env.local
+
+# НЕ игнорировать файлы состояния бота — они должны коммититься!
+# used_links.txt   <-- не добавляй эту строку
+# dead_links.txt   <-- не добавляй эту строку
+# used_posts.txt   <-- не добавляй эту строку
+# used_topics.txt  <-- не добавляй эту строку
+
