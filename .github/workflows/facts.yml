@@ -14,11 +14,9 @@ jobs:
     timeout-minutes: 15
 
     env:
-      # GitHub сам переведёт actions на Node 24, дополнительных env не нужно
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
       TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+      TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
 
     steps:
       - name: Checkout repo
@@ -41,27 +39,24 @@ jobs:
           ai:
             url: "https://api.groq.com/openai/v1/chat/completions"
             model: "llama-3.3-70b-versatile"
-            max_tokens: 900
-          output:
-            directory: "output/posts"
-            format: "markdown"
           logging:
             level: "INFO"
-            file: "facts_generator.log"
-          current_topic_index: 0
           EOF
+
+      - name: Init state files (if missing)
+        run: |
+          touch used_links.txt dead_links.txt used_posts.txt used_topics.txt
 
       - name: Run facts generator
         timeout-minutes: 10
-        run: |
-          python scripts/facts_generator.py
+        run: python scripts/facts_generator.py
 
-      - name: Commit and push generated posts
+      - name: Commit state files
         run: |
-          git config user.name "github-actions[bot]"
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add output/posts/ config.yaml || true
-          git commit -m "Add generated facts [skip ci]" || echo "Nothing to commit"
+          git add used_links.txt dead_links.txt used_posts.txt used_topics.txt
+          git diff --staged --quiet || git commit -m "chore: update state [skip ci]"
           git push || echo "Nothing to push"
 
 
