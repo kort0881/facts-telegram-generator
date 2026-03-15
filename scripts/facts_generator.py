@@ -917,9 +917,11 @@ def main() -> None:
                 log.info("Post has no strong fact (year + numbers), skipping")
                 continue
 
-            if not has_strict_fact_block(post):
-                log.info("Post fails strict first-block fact check, skipping")
-                continue
+                        # Временно отключаем строгую проверку первого блока
+            # if not has_strict_fact_block(post):
+            #     log.info("Post fails strict first-block fact check, skipping")
+            #     continue
+
 
             if looks_like_announcement(post):
                 log.info("Post looks like shallow announcement, skipping")
