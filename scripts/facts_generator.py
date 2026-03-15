@@ -895,14 +895,15 @@ def main() -> None:
             continue
 
         try:
-    log.info(f"Generating post from: {article_url}")
-    post = call_ai(cfg, text)
-    time.sleep(2)
+     log.info(f"Generating post from: {article_url}")
+     post = call_ai(cfg, text)
+     time.sleep(2)
 
-    post = strip_google_hint(post)
-    post = strip_calls_to_action(post)
-    post = normalize_blank_lines(post)
-    ...
+     post = strip_google_hint(post)
+     post = strip_calls_to_action(post)
+     post = normalize_blank_lines(post)
+     ...
+
 
 
             if post.strip().upper().startswith("SKIP"):
