@@ -47,7 +47,8 @@ TOPIC_BLOCK_WINDOW = 10
 TOPIC_TOP_WORDS = 8
 
 # DRY-RUN: True = показывать пост в консоли, НЕ отправлять в Telegram
-DRY_RUN = True
+DRY_RUN = False
+
 
 # Фиксированная шапка канала
 CHANNEL_HEADER = "Что ты не знал"
