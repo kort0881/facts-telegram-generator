@@ -45,6 +45,9 @@ MAX_STORED_POSTS = 300
 TOPIC_BLOCK_WINDOW = 10
 TOPIC_TOP_WORDS = 8
 
+# Фиксированная шапка канала
+CHANNEL_HEADER = "Что ты не знал"
+
 # -------------------------
 # LOGGING
 # -------------------------
@@ -214,13 +217,16 @@ PROMPT = """
 Ты — автор живого, креативного канала с фактами для аудитории 18–35 лет.
 Задача — рассказать ОДИН яркий факт коротко, конкретно и по‑человечески, максимально варьируя стиль.
 
+ВАЖНО: название канала «Что ты не знал» уже добавляется автоматически перед постом.
+НЕ пиши «Что ты не знал» в заголовке — только цепляющий заголовок самого факта.
+
 Формат поста (строго соблюдай структуру и пустые строки):
 
 1 строка — короткий цепляющий заголовок + 1–2 эмодзи.
 Обязательно варьируй шаблоны заголовка, не используй один шаблон дважды подряд.
-Примеры: «Факт дня: …», «Мозг вскипает от этого: …», «Неочевидная штука про …»,
-«Вот что скрывается за …», «История молчит об этом: …», «В твоём мозге прямо сейчас: …».
-«Что ты не знал» — максимум в каждом пятом посте.
+Примеры: «Факт дня: …», «Неочевидная штука про …», «Вот что скрывается за …»,
+«История молчит об этом: …», «В твоём мозге прямо сейчас: …», «Странная правда о …».
+ЗАПРЕЩЕНО начинать заголовок с: «Мозг вскипает», «Что ты не знал», «Мозг взрывается».
 
 1 блок (2–3 предложения) — один КОНКРЕТНЫЙ факт из текста.
 ЖЁСТКОЕ ТРЕБОВАНИЕ: в этом блоке ОБЯЗАТЕЛЬНО должен быть хотя бы ОДИН из элементов:
@@ -280,6 +286,7 @@ PROMPT = """
 - «подписывайся», «поделись с друзьями», «расскажи друзьям»
 - «прямо сейчас посмотреть», «самые популярные статьи», «независимый журнал»
 - «публикует исследования», «освещает последние открытия», «делает науку доступной»
+- «Мозг вскипает», «Мозг взрывается», «Что ты не знал» (в заголовке)
 
 Разнообразие:
 - Не делай два поста подряд на одну тему.
@@ -352,6 +359,28 @@ BANNED_PHRASES = [
     "открытый доступ",
     "бесплатный доступ к статьям",
 ]
+
+# -------------------------
+# BANNED TITLE TEMPLATES
+# -------------------------
+_BANNED_TITLE_PATTERNS = re.compile(
+    r"^("
+    r"мозг вскипает"
+    r"|мозг взрывается"
+    r"|мозг вскипел"
+    r"|что ты не знал"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def has_banned_title(text: str) -> bool:
+    first_line = text.strip().split("\n", 1)[0].lower()
+    if _BANNED_TITLE_PATTERNS.search(first_line):
+        log.info(f"Banned title template detected: {first_line[:60]}")
+        return True
+    return False
+
 
 # -------------------------
 # STOP‑WORDS
@@ -609,7 +638,7 @@ def strip_google_hint(text: str) -> str:
     if newline_pos != -1:
         cut_pos = newline_pos
     cleaned = text[:cut_pos].rstrip()
-    log.info("Stripped google‑hint block from post")
+    log.info("Stripped google-hint block from post")
     return cleaned
 
 
@@ -680,7 +709,9 @@ def call_ai(cfg: Dict, article: str) -> str:
 # TELEGRAM
 # -------------------------
 def send_telegram(cfg: Dict, text: str, url: str) -> None:
-    msg = f"{text}\n\nИсточник: {url}"
+    # Фиксированная шапка канала перед каждым постом
+    full_post = f"{CHANNEL_HEADER}\n\n{text}"
+    msg = f"{full_post}\n\nИсточник: {url}"
     if len(msg) > TELEGRAM_LIMIT:
         msg = msg[:TELEGRAM_LIMIT]
     resp = requests.post(
@@ -688,7 +719,7 @@ def send_telegram(cfg: Dict, text: str, url: str) -> None:
         json={"chat_id": cfg["tg_chat"], "text": msg},
     )
     resp.raise_for_status()
-    save_post(text)
+    save_post(text)  # сохраняем без шапки — чтобы антидубликатор работал корректно
     topic_words = extract_topic_words(text)
     save_topic(topic_words)
     log.info(f"Saved topic keywords: {topic_words}")
@@ -771,23 +802,19 @@ def main() -> None:
             log.info(f"Generating post from: {article_url}")
             post = call_ai(cfg, text)
 
-            # Пост-обработка
             post = strip_google_hint(post)
             post = strip_calls_to_action(post)
             post = normalize_blank_lines(post)
 
-            # Проверка: ИИ вернул SKIP
             if post.strip().upper().startswith("SKIP"):
                 log.info("AI returned SKIP — no good fact found in article")
                 mark_used(url, article_url, used_urls)
                 continue
 
-            # Минимальная длина
             if len(post) < 500:
                 log.info(f"Post too short ({len(post)} chars), skipping")
                 continue
 
-            # Конкретность
             if looks_too_vague(post):
                 log.info("Post has no concrete data (numbers/years), skipping")
                 continue
@@ -796,23 +823,23 @@ def main() -> None:
                 log.info("Post has no strong fact (year + numbers), skipping")
                 continue
 
-            # Похоже на объявление
             if looks_like_announcement(post):
                 log.info("Post looks like shallow announcement, skipping")
                 continue
 
-            # Запрещённые фразы
+            if has_banned_title(post):
+                log.info("Post has banned title template, skipping")
+                continue
+
             if contains_banned_phrases(post):
                 log.info("Post contains banned phrases, skipping")
                 continue
 
-            # Реклама сайта/издания
             if is_promo_for_website(post):
                 log.info("Post is promo for a website/publication, skipping")
                 mark_used(url, article_url, used_urls)
                 continue
 
-            # Дубликат по тексту
             if old_posts:
                 max_sim = max(
                     combined_similarity(post, old)
@@ -825,13 +852,11 @@ def main() -> None:
                 mark_used(url, article_url, used_urls)
                 continue
 
-            # Дубликат по теме
             if is_topic_repeated(post, recent_topics):
                 log.info("Topic already covered recently, skipping")
                 mark_used(url, article_url, used_urls)
                 continue
 
-            # Отправка
             send_telegram(cfg, post, article_url)
             mark_used(url, article_url, used_urls)
 
