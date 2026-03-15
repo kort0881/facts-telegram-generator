@@ -11,6 +11,7 @@ import re
 import sys
 import json
 import logging
+import time
 from typing import List, Set, Dict, Tuple
 from collections import Counter
 from urllib.parse import urlparse, urljoin
@@ -48,7 +49,6 @@ TOPIC_TOP_WORDS = 8
 
 # DRY-RUN: True = показывать пост в консоли, НЕ отправлять в Telegram
 DRY_RUN = False
-
 
 # Фиксированная шапка канала
 CHANNEL_HEADER = "Что ты не знал"
@@ -102,6 +102,9 @@ def load_config() -> Dict:
 def load_links() -> List[str]:
     links: List[str] = []
     url_pattern = re.compile(r'https?://[^\s)]+')
+    if not os.path.exists(LINKS_PATH):
+        log.error(f"Links file {LINKS_PATH} not found")
+        return links
     with open(LINKS_PATH, "r", encoding="utf-8") as f:
         for raw in f:
             line = raw.strip()
@@ -796,7 +799,7 @@ def send_telegram(cfg: Dict, text: str, url: str) -> None:
     if len(msg) > TELEGRAM_LIMIT:
         msg = msg[:TELEGRAM_LIMIT]
 
-    if globals().get("DRY_RUN", False):
+    if DRY_RUN:
         print("\n" + "=" * 80)
         print("DRY RUN — сообщение НЕ отправлено в Telegram")
         print("=" * 80)
@@ -856,7 +859,7 @@ def main() -> None:
         log.error("No links loaded – check links.txt")
         return
 
-    # чтобы не ходить всегда по одним и тем же первым ссылкам
+    # Перемешиваем, чтобы не ходить всегда по одним и тем же первым ссылкам
     random.shuffle(links)
 
     candidates, used_urls, dead_urls = pick_sources(links)
@@ -895,16 +898,13 @@ def main() -> None:
             continue
 
         try:
-     log.info(f"Generating post from: {article_url}")
-     post = call_ai(cfg, text)
-     time.sleep(2)
+            log.info(f"Generating post from: {article_url}")
+            post = call_ai(cfg, text)
+            time.sleep(2)
 
-     post = strip_google_hint(post)
-     post = strip_calls_to_action(post)
-     post = normalize_blank_lines(post)
-     ...
-
-
+            post = strip_google_hint(post)
+            post = strip_calls_to_action(post)
+            post = normalize_blank_lines(post)
 
             if post.strip().upper().startswith("SKIP"):
                 log.info("AI returned SKIP — no good fact found in article")
@@ -969,7 +969,7 @@ def main() -> None:
                 mark_used(url, article_url, used_urls)
                 continue
 
-            # === ВАЖНО: здесь 1 пост за запуск ===
+            # === Успешно: отправляем 1 пост за запуск ===
             send_telegram(cfg, post, article_url)
             mark_used(url, article_url, used_urls)
 
@@ -978,13 +978,13 @@ def main() -> None:
                 recent_domains.pop(0)
 
             log.info("Post processed successfully")
-            break  # <-- вместо return, чтобы цикл завершить, но main() не выходил аварийно
+            break  # Выходим из цикла после успешной отправки
 
         except Exception as e:
             log.error(f"Failed on {article_url}: {e}")
             continue
     else:
-        # если цикл прошёл все candidates и ни один пост не подошёл
+        # Если цикл прошёл все candidates и ни один пост не подошёл
         log.warning("All sources exhausted or failed")
 
 
