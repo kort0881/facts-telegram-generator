@@ -56,3 +56,8 @@ https://hbr.org
 https://www.nplus1.ru
 https://www.icc-cpi.int/
 https://www.healthline.com/health/productivity-tips
+https://www.trello.com/blog/
+https://www.atlasobscura.com/places/weird-facts
+intent://deeplink/post?post_id=10229136&referrer=utm_source%3Dwebsite%26utm_medium%3Dheader#Intent;scheme=boredpanda;package=com.boredpanda.android;end
+https://www.bbcsciencefocus.com/science/fun-facts
+https://www.neurosciencenews.com/memory-research-2022-18763/
