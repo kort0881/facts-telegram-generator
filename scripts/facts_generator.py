@@ -3,6 +3,7 @@
 """
 Facts Generator ULTRA
 Improved Telegram fact post generator with enhanced anti-duplication
++ Groq rate limiting & safe retries
 """
 
 import os
@@ -54,12 +55,15 @@ DRY_RUN = False
 CHANNEL_HEADER = "Что ты не знал"
 
 # -------------------------
-# GROQ RATE LIMIT PROTECTION
+# GROQ RATE LIMIT / BUDGET
 # -------------------------
-MAX_AI_CALLS_PER_RUN = 5      # Максимум вызовов Groq за один запуск
-MAX_GROQ_FAILURES = 3          # Максимум ошибок Groq подряд до падения job
-AI_RETRY_ATTEMPTS = 3          # Количество ретраев при ошибке Groq
-AI_RETRY_BASE_DELAY = 5        # Базовая задержка между ретраями (секунды)
+GROQ_STATE_FILE = "groq_state.json"
+MAX_AI_CALLS_PER_RUN = 5        # максимум вызовов LLM за запуск
+AI_RETRY_ATTEMPTS = 2           # ретраи при ошибке Groq
+AI_RETRY_BASE_DELAY = 5         # базовая пауза между ретраями (сек)
+MAX_RETRY_AFTER = 60            # максимум уважения Retry-After (сек)
+MIN_DELAY_BETWEEN_CALLS = 2.0   # минимальная пауза между запросами к Groq (сек)
+RPM_LIMIT = 20                  # грубый лимит запросов в минуту
 
 # -------------------------
 # LOGGING
@@ -75,18 +79,67 @@ logging.basicConfig(
 log = logging.getLogger("facts_bot")
 
 
-# -------------------------
-# CUSTOM EXCEPTIONS
-# -------------------------
-class GroqRateLimitError(Exception):
-    """Raised when Groq returns 429 Too Many Requests"""
-    pass
+class GroqLimiter:
+    def __init__(self, path: str = GROQ_STATE_FILE):
+        self.path = path
+        self.data = {
+            "last_call_time": 0.0,
+            "minute_start": 0.0,
+            "request_count": 0,
+        }
+        self._load()
+
+    def _load(self):
+        if not os.path.exists(self.path):
+            return
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+                self.data.update(saved)
+        except Exception:
+            pass
+
+    def save(self):
+        try:
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(self.data, f)
+        except Exception:
+            pass
+
+    def wait_before_call(self):
+        now = time.time()
+
+        # Обновляем минутное окно
+        if now - self.data["minute_start"] > 60:
+            self.data["minute_start"] = now
+            self.data["request_count"] = 0
+
+        # Если выбили RPM — ждём до конца минуты
+        if self.data["request_count"] >= RPM_LIMIT:
+            wait = 60 - (now - self.data["minute_start"]) + 1
+            if wait > 0:
+                log.info(f"GroqLimiter: RPM limit hit, sleeping {wait:.1f}s")
+                time.sleep(wait)
+            self.data["minute_start"] = time.time()
+            self.data["request_count"] = 0
+
+        # Минимальная пауза между вызовами
+        last = self.data["last_call_time"]
+        delta = now - last
+        if delta < MIN_DELAY_BETWEEN_CALLS:
+            wait = MIN_DELAY_BETWEEN_CALLS - delta
+            if wait > 0:
+                log.info(f"GroqLimiter: spacing calls, sleeping {wait:.2f}s")
+                time.sleep(wait)
+
+        # Обновляем счётчики
+        self.data["last_call_time"] = time.time()
+        self.data["request_count"] += 1
+        self.save()
 
 
-class GroqAPIError(Exception):
-    """Raised when Groq API call fails after all retries"""
-    pass
-
+groq_limiter = GroqLimiter()
+AI_CALLS = 0
 
 # -------------------------
 # CONFIG LOADING
@@ -785,13 +838,12 @@ def smart_clip_post(post: str, limit: int = 900, min_cut: int = 400) -> str:
 
 
 # -------------------------
-# AI CALL WITH RETRY AND BACKOFF
+# AI CALL WITH LIMITER
 # -------------------------
 def call_ai(cfg: Dict, article: str) -> str:
     """
-    Вызов Groq API с retry и exponential backoff.
-    Выбрасывает GroqRateLimitError при 429,
-    GroqAPIError при других ошибках после всех попыток.
+    Вызов Groq c лимитером, ограничением Retry-After и мягкими ретраями.
+    Если не получилось — возвращает пустую строку, чтобы main() шёл дальше.
     """
     payload = {
         "model": cfg["ai_model"],
@@ -805,49 +857,70 @@ def call_ai(cfg: Dict, article: str) -> str:
         "Content-Type": "application/json",
     }
 
-    last_exception = None
+    global AI_CALLS
+    if AI_CALLS >= MAX_AI_CALLS_PER_RUN:
+        log.info(f"Groq call limit per run reached ({MAX_AI_CALLS_PER_RUN}), skipping AI")
+        return ""
+
+    last_error = None
 
     for attempt in range(1, AI_RETRY_ATTEMPTS + 1):
-        try:
-            log.info(f"Groq API call attempt {attempt}/{AI_RETRY_ATTEMPTS}")
-            r = requests.post(cfg["ai_url"], json=payload, headers=headers, timeout=60)
+        log.info(f"Groq API call attempt {attempt}/{AI_RETRY_ATTEMPTS}")
 
-            # Проверяем на 429 Too Many Requests
-            if r.status_code == 429:
-                retry_after = int(r.headers.get("Retry-After", AI_RETRY_BASE_DELAY * attempt))
-                log.warning(f"Groq 429 Too Many Requests, retry after {retry_after}s")
+        groq_limiter.wait_before_call()
+
+        try:
+            resp = requests.post(cfg["ai_url"], json=payload, headers=headers, timeout=60)
+
+            # 429 Too Many Requests
+            if resp.status_code == 429:
+                retry_after_raw = resp.headers.get("Retry-After")
+                try:
+                    retry_after = int(retry_after_raw) if retry_after_raw else AI_RETRY_BASE_DELAY * attempt
+                except ValueError:
+                    retry_after = AI_RETRY_BASE_DELAY * attempt
+
+                wait = min(retry_after, MAX_RETRY_AFTER)
+                log.warning(
+                    f"Groq 429 Too Many Requests, Retry-After={retry_after_raw}, "
+                    f"sleep {wait}s (capped)"
+                )
+                last_error = f"429 Retry-After={retry_after_raw}"
                 if attempt < AI_RETRY_ATTEMPTS:
-                    time.sleep(retry_after)
+                    time.sleep(wait)
                     continue
                 else:
-                    raise GroqRateLimitError(f"Groq rate limit hit after {AI_RETRY_ATTEMPTS} attempts")
+                    return ""
 
-            r.raise_for_status()
-            data = r.json()
+            # Другие HTTP‑ошибки
+            if resp.status_code >= 400:
+                last_error = f"HTTP {resp.status_code}"
+                log.warning(f"Groq HTTP error {resp.status_code}: {resp.text[:200]}")
+                if attempt < AI_RETRY_ATTEMPTS:
+                    wait = AI_RETRY_BASE_DELAY * attempt
+                    log.info(f"Retry after {wait}s")
+                    time.sleep(wait)
+                    continue
+                else:
+                    return ""
+
+            data = resp.json()
+            AI_CALLS += 1
             return data["choices"][0]["message"]["content"].strip()
 
-        except GroqRateLimitError:
-            raise  # Пробрасываем наверх
-
-        except requests.exceptions.HTTPError as e:
-            last_exception = e
-            log.warning(f"Groq HTTP error on attempt {attempt}: {e}")
+        except requests.exceptions.RequestException as e:
+            last_error = str(e)
+            log.warning(f"Groq request exception on attempt {attempt}: {e}")
             if attempt < AI_RETRY_ATTEMPTS:
-                delay = AI_RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 1)
-                log.info(f"Waiting {delay:.1f}s before retry...")
-                time.sleep(delay)
-            continue
+                wait = AI_RETRY_BASE_DELAY * attempt
+                log.info(f"Retry after {wait}s")
+                time.sleep(wait)
+                continue
+            else:
+                return ""
 
-        except Exception as e:
-            last_exception = e
-            log.warning(f"Groq error on attempt {attempt}: {e}")
-            if attempt < AI_RETRY_ATTEMPTS:
-                delay = AI_RETRY_BASE_DELAY * attempt
-                log.info(f"Waiting {delay:.1f}s before retry...")
-                time.sleep(delay)
-            continue
-
-    raise GroqAPIError(f"Groq call failed after {AI_RETRY_ATTEMPTS} attempts: {last_exception}")
+    log.error(f"Groq call failed after retries: {last_error}")
+    return ""
 
 
 # -------------------------
@@ -931,10 +1004,6 @@ def main() -> None:
     recent_domains: List[str] = []
     MAX_RECENT_DOMAINS = 5
 
-    # Счётчики для защиты от rate limit
-    ai_calls = 0
-    groq_failures = 0
-
     for url in candidates:
         domain = urlparse(url).netloc
         if domain in recent_domains:
@@ -960,31 +1029,15 @@ def main() -> None:
             continue
 
         try:
-            # Проверка лимита вызовов AI за один запуск
-            if ai_calls >= MAX_AI_CALLS_PER_RUN:
-                log.warning(
-                    f"Max Groq calls per run reached ({MAX_AI_CALLS_PER_RUN}), "
-                    "aborting run to protect rate limit"
-                )
-                sys.exit(1)
-
             log.info(f"Generating post from: {article_url}")
-
-            # Базовая задержка перед вызовом Groq
-            base_delay = random.uniform(1.5, 3.0)
-            log.info(f"Sleeping {base_delay:.1f}s before Groq call")
-            time.sleep(base_delay)
-
-            # Вызов AI с учётом счётчика
-            ai_calls += 1
-            log.info(f"Groq call #{ai_calls} of max {MAX_AI_CALLS_PER_RUN} per run")
             post = call_ai(cfg, text)
 
-            # Дополнительная пауза после успешного вызова
-            time.sleep(1)
+            if not post:
+                log.info("No post from Groq for this article, trying next source")
+                mark_used(url, article_url, used_urls)
+                continue
 
-            # Сбрасываем счётчик фейлов при успешном вызове
-            groq_failures = 0
+            time.sleep(2)
 
             post = strip_google_hint(post)
             post = strip_calls_to_action(post)
@@ -1045,7 +1098,6 @@ def main() -> None:
                 mark_used(url, article_url, used_urls)
                 continue
 
-            # Успешно: отправляем пост
             send_telegram(cfg, post, article_url)
             mark_used(url, article_url, used_urls)
 
@@ -1054,52 +1106,11 @@ def main() -> None:
                 recent_domains.pop(0)
 
             log.info("Post processed successfully")
-            break
-
-        except GroqRateLimitError as e:
-            log.error(f"Groq rate limit error: {e}")
-            groq_failures += 1
-            log.warning(
-                f"Groq rate-limit failure #{groq_failures} in this run "
-                f"(max allowed {MAX_GROQ_FAILURES})"
-            )
-            if groq_failures >= MAX_GROQ_FAILURES:
-                log.error("Too many Groq rate-limit failures, aborting run with error")
-                sys.exit(1)
-            # Длинная пауза перед следующей попыткой
-            cooldown = 30 + random.uniform(0, 10)
-            log.info(f"Cooling down for {cooldown:.1f}s after rate limit...")
-            time.sleep(cooldown)
-            continue
-
-        except GroqAPIError as e:
-            log.error(f"Groq API error: {e}")
-            groq_failures += 1
-            log.warning(
-                f"Groq API failure #{groq_failures} in this run "
-                f"(max allowed {MAX_GROQ_FAILURES})"
-            )
-            if groq_failures >= MAX_GROQ_FAILURES:
-                log.error("Too many consecutive Groq failures, aborting run with error")
-                sys.exit(1)
-            continue
-
-        except requests.exceptions.HTTPError as e:
-            log.error(f"HTTP error on {article_url}: {e}")
-            groq_failures += 1
-            log.warning(
-                f"HTTP failure #{groq_failures} in this run "
-                f"(max allowed {MAX_GROQ_FAILURES})"
-            )
-            if groq_failures >= MAX_GROQ_FAILURES:
-                log.error("Too many consecutive HTTP failures, aborting run with error")
-                sys.exit(1)
-            continue
+            break  # один пост за запуск
 
         except Exception as e:
-            log.error(f"Unexpected error on {article_url}: {e}")
+            log.error(f"Failed on {article_url}: {e}")
             continue
-
     else:
         log.warning("All sources exhausted or failed")
 
