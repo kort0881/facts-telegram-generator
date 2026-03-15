@@ -353,6 +353,7 @@ BANNED_PHRASES = [
     "нельзя недооценивать",
     "это касается каждого из нас",
     "мы все сталкиваемся с этим",
+    "меняет наше понимание",
     "загугли",
     "если хочешь копнуть глубже",
     "если хочешь узнать больше",
@@ -735,7 +736,7 @@ def has_strict_fact_block(text: str) -> bool:
 def has_forbidden_soft_cta(text: str) -> bool:
     """Hard-skip posts with soft CTA / experience phrases that slipped through cleanup."""
     return bool(re.search(
-        r"(теперь ты можешь|теперь любой может|был ли у тебя опыт)",
+        r"(теперь ты можешь|теперь любой может|был ли у тебя опыт|было ли у тебя|бывало ли у тебя)",
         text.lower()
     ))
 
@@ -916,10 +917,9 @@ def main() -> None:
                 log.info("Post has no strong fact (year + numbers), skipping")
                 continue
 
-                        # if not has_strict_fact_block(post):
-            #     log.info("Post fails strict first-block fact check, skipping")
-            #     continue
-
+            if not has_strict_fact_block(post):
+                log.info("Post fails strict first-block fact check, skipping")
+                continue
 
             if looks_like_announcement(post):
                 log.info("Post looks like shallow announcement, skipping")
