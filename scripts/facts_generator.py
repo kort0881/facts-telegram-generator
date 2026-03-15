@@ -54,6 +54,14 @@ DRY_RUN = False
 CHANNEL_HEADER = "Что ты не знал"
 
 # -------------------------
+# GROQ RATE LIMIT PROTECTION
+# -------------------------
+MAX_AI_CALLS_PER_RUN = 5      # Максимум вызовов Groq за один запуск
+MAX_GROQ_FAILURES = 3          # Максимум ошибок Groq подряд до падения job
+AI_RETRY_ATTEMPTS = 3          # Количество ретраев при ошибке Groq
+AI_RETRY_BASE_DELAY = 5        # Базовая задержка между ретраями (секунды)
+
+# -------------------------
 # LOGGING
 # -------------------------
 logging.basicConfig(
@@ -65,6 +73,19 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("facts_bot")
+
+
+# -------------------------
+# CUSTOM EXCEPTIONS
+# -------------------------
+class GroqRateLimitError(Exception):
+    """Raised when Groq returns 429 Too Many Requests"""
+    pass
+
+
+class GroqAPIError(Exception):
+    """Raised when Groq API call fails after all retries"""
+    pass
 
 
 # -------------------------
@@ -652,7 +673,7 @@ _BAD_CTA_PATTERNS = re.compile(
     r"|будь в курсе последних открытий"
     r"|подписывайся"
     r"|поделись с друзьями"
-    r"|расскажи друзьям"
+    r"|расскажи друзьями"
     r"|прямо сейчас (посмотреть|узнать|перейти|открыть)"
     r"|самые популярные статьи месяца"
     r"|теперь ты можешь"
@@ -690,8 +711,6 @@ def strip_calls_to_action(text: str) -> str:
 # -------------------------
 # CONTENT QUALITY CHECKS
 # -------------------------
-
-# ИЗМЕНЕНИЕ 1: Новая версия has_strong_fact — проверяет ВЕСЬ пост
 def has_strong_fact(text: str) -> bool:
     """
     Проверяет весь пост на наличие:
@@ -701,13 +720,8 @@ def has_strong_fact(text: str) -> bool:
     """
     t = text.lower()
 
-    # Проверка на год
     has_year = bool(re.search(r"\b(19\d{2}|20\d{2})\b", t))
-
-    # Любая цифра (включая проценты, количества и т.д.)
     has_number = bool(re.search(r"\b\d+([.,]\d+)?\b", t))
-
-    # Глаголы результата исследования
     has_result_verb = bool(re.search(
         r"\b(показал[аи]?|выяснил[аи]?|обнаружил[аи]?|нашл[ие]"
         r"|измерил[аи]?|увеличил[аи]?|снизил[аи]?|повысил[аи]?"
@@ -721,28 +735,6 @@ def has_strong_fact(text: str) -> bool:
             f"Strong fact check: year={has_year}, "
             f"number={has_number}, result_verb={has_result_verb}"
         )
-
-    return has_year and has_number and has_result_verb
-
-
-# ОСТАВЛЕНО НА БУДУЩЕЕ (не используется в пайплайне)
-def has_strict_fact_block(text: str) -> bool:
-    """
-    [DEPRECATED] Строгая проверка первого блока.
-    Оставлена на случай, если понадобится в будущем.
-    """
-    parts = text.strip().split("\n\n", 2)
-    if len(parts) < 2:
-        return False
-    first_block = parts[1]
-
-    has_year = bool(re.search(r"19\d{2}|20\d{2}", first_block))
-    has_number = bool(re.search(r"\d", first_block))
-    has_result_verb = bool(re.search(
-        r"\b(показал[аи]?|выяснил[аи]?|обнаружил[аи]?|нашл[ие]|измерил[аи]?"
-        r"|увеличил[аи]?|снизил[аи]?|повысил[аи]?|зафиксировал[аи]?|доказал[аи]?)\b",
-        first_block.lower()
-    ))
 
     return has_year and has_number and has_result_verb
 
@@ -793,9 +785,14 @@ def smart_clip_post(post: str, limit: int = 900, min_cut: int = 400) -> str:
 
 
 # -------------------------
-# AI CALL
+# AI CALL WITH RETRY AND BACKOFF
 # -------------------------
 def call_ai(cfg: Dict, article: str) -> str:
+    """
+    Вызов Groq API с retry и exponential backoff.
+    Выбрасывает GroqRateLimitError при 429,
+    GroqAPIError при других ошибках после всех попыток.
+    """
     payload = {
         "model": cfg["ai_model"],
         "messages": [{"role": "user", "content": PROMPT.format(article=article)}],
@@ -807,10 +804,50 @@ def call_ai(cfg: Dict, article: str) -> str:
         "Authorization": f"Bearer {cfg['ai_key']}",
         "Content-Type": "application/json",
     }
-    r = requests.post(cfg["ai_url"], json=payload, headers=headers, timeout=60)
-    r.raise_for_status()
-    data = r.json()
-    return data["choices"][0]["message"]["content"].strip()
+
+    last_exception = None
+
+    for attempt in range(1, AI_RETRY_ATTEMPTS + 1):
+        try:
+            log.info(f"Groq API call attempt {attempt}/{AI_RETRY_ATTEMPTS}")
+            r = requests.post(cfg["ai_url"], json=payload, headers=headers, timeout=60)
+
+            # Проверяем на 429 Too Many Requests
+            if r.status_code == 429:
+                retry_after = int(r.headers.get("Retry-After", AI_RETRY_BASE_DELAY * attempt))
+                log.warning(f"Groq 429 Too Many Requests, retry after {retry_after}s")
+                if attempt < AI_RETRY_ATTEMPTS:
+                    time.sleep(retry_after)
+                    continue
+                else:
+                    raise GroqRateLimitError(f"Groq rate limit hit after {AI_RETRY_ATTEMPTS} attempts")
+
+            r.raise_for_status()
+            data = r.json()
+            return data["choices"][0]["message"]["content"].strip()
+
+        except GroqRateLimitError:
+            raise  # Пробрасываем наверх
+
+        except requests.exceptions.HTTPError as e:
+            last_exception = e
+            log.warning(f"Groq HTTP error on attempt {attempt}: {e}")
+            if attempt < AI_RETRY_ATTEMPTS:
+                delay = AI_RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                log.info(f"Waiting {delay:.1f}s before retry...")
+                time.sleep(delay)
+            continue
+
+        except Exception as e:
+            last_exception = e
+            log.warning(f"Groq error on attempt {attempt}: {e}")
+            if attempt < AI_RETRY_ATTEMPTS:
+                delay = AI_RETRY_BASE_DELAY * attempt
+                log.info(f"Waiting {delay:.1f}s before retry...")
+                time.sleep(delay)
+            continue
+
+    raise GroqAPIError(f"Groq call failed after {AI_RETRY_ATTEMPTS} attempts: {last_exception}")
 
 
 # -------------------------
@@ -882,7 +919,6 @@ def main() -> None:
         log.error("No links loaded – check links.txt")
         return
 
-    # Перемешиваем, чтобы не ходить всегда по одним и тем же первым ссылкам
     random.shuffle(links)
 
     candidates, used_urls, dead_urls = pick_sources(links)
@@ -895,7 +931,10 @@ def main() -> None:
     recent_domains: List[str] = []
     MAX_RECENT_DOMAINS = 5
 
-    # 1 пост за запуск, но ищем по всем кандидатам, пока не найдём нормальный
+    # Счётчики для защиты от rate limit
+    ai_calls = 0
+    groq_failures = 0
+
     for url in candidates:
         domain = urlparse(url).netloc
         if domain in recent_domains:
@@ -921,9 +960,31 @@ def main() -> None:
             continue
 
         try:
+            # Проверка лимита вызовов AI за один запуск
+            if ai_calls >= MAX_AI_CALLS_PER_RUN:
+                log.warning(
+                    f"Max Groq calls per run reached ({MAX_AI_CALLS_PER_RUN}), "
+                    "aborting run to protect rate limit"
+                )
+                sys.exit(1)
+
             log.info(f"Generating post from: {article_url}")
+
+            # Базовая задержка перед вызовом Groq
+            base_delay = random.uniform(1.5, 3.0)
+            log.info(f"Sleeping {base_delay:.1f}s before Groq call")
+            time.sleep(base_delay)
+
+            # Вызов AI с учётом счётчика
+            ai_calls += 1
+            log.info(f"Groq call #{ai_calls} of max {MAX_AI_CALLS_PER_RUN} per run")
             post = call_ai(cfg, text)
-            time.sleep(2)
+
+            # Дополнительная пауза после успешного вызова
+            time.sleep(1)
+
+            # Сбрасываем счётчик фейлов при успешном вызове
+            groq_failures = 0
 
             post = strip_google_hint(post)
             post = strip_calls_to_action(post)
@@ -942,13 +1003,9 @@ def main() -> None:
                 log.info(f"Post too long ({len(post)} chars), smart clipping to 900")
                 post = smart_clip_post(post, limit=900, min_cut=400)
 
-            # ИЗМЕНЕНИЕ 2: Единственная проверка конкретики — по всему посту
             if not has_strong_fact(post):
                 log.info("Post has no strong fact (year + number + result verb), skipping")
                 continue
-
-            # ИЗМЕНЕНИЕ 3: Убрана проверка has_strict_fact_block
-            # (была здесь, теперь удалена)
 
             if looks_like_announcement(post):
                 log.info("Post looks like shallow announcement, skipping")
@@ -988,7 +1045,7 @@ def main() -> None:
                 mark_used(url, article_url, used_urls)
                 continue
 
-            # === Успешно: отправляем 1 пост за запуск ===
+            # Успешно: отправляем пост
             send_telegram(cfg, post, article_url)
             mark_used(url, article_url, used_urls)
 
@@ -997,13 +1054,53 @@ def main() -> None:
                 recent_domains.pop(0)
 
             log.info("Post processed successfully")
-            break  # Выходим из цикла после успешной отправки
+            break
+
+        except GroqRateLimitError as e:
+            log.error(f"Groq rate limit error: {e}")
+            groq_failures += 1
+            log.warning(
+                f"Groq rate-limit failure #{groq_failures} in this run "
+                f"(max allowed {MAX_GROQ_FAILURES})"
+            )
+            if groq_failures >= MAX_GROQ_FAILURES:
+                log.error("Too many Groq rate-limit failures, aborting run with error")
+                sys.exit(1)
+            # Длинная пауза перед следующей попыткой
+            cooldown = 30 + random.uniform(0, 10)
+            log.info(f"Cooling down for {cooldown:.1f}s after rate limit...")
+            time.sleep(cooldown)
+            continue
+
+        except GroqAPIError as e:
+            log.error(f"Groq API error: {e}")
+            groq_failures += 1
+            log.warning(
+                f"Groq API failure #{groq_failures} in this run "
+                f"(max allowed {MAX_GROQ_FAILURES})"
+            )
+            if groq_failures >= MAX_GROQ_FAILURES:
+                log.error("Too many consecutive Groq failures, aborting run with error")
+                sys.exit(1)
+            continue
+
+        except requests.exceptions.HTTPError as e:
+            log.error(f"HTTP error on {article_url}: {e}")
+            groq_failures += 1
+            log.warning(
+                f"HTTP failure #{groq_failures} in this run "
+                f"(max allowed {MAX_GROQ_FAILURES})"
+            )
+            if groq_failures >= MAX_GROQ_FAILURES:
+                log.error("Too many consecutive HTTP failures, aborting run with error")
+                sys.exit(1)
+            continue
 
         except Exception as e:
-            log.error(f"Failed on {article_url}: {e}")
+            log.error(f"Unexpected error on {article_url}: {e}")
             continue
+
     else:
-        # Если цикл прошёл все candidates и ни один пост не подошёл
         log.warning("All sources exhausted or failed")
 
 
