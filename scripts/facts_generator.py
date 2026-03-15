@@ -28,6 +28,7 @@ USED_LINKS_PATH = "used_links.txt"
 DEAD_LINKS_PATH = "dead_links.txt"
 POSTS_LOG_PATH = "used_posts.txt"
 TOPICS_LOG_PATH = "used_topics.txt"
+LOG_FILE_PATH = "facts_generator.log"
 
 # -------------------------
 # SETTINGS
@@ -45,6 +46,9 @@ MAX_STORED_POSTS = 300
 TOPIC_BLOCK_WINDOW = 10
 TOPIC_TOP_WORDS = 8
 
+# DRY-RUN: True = показывать пост в консоли, НЕ отправлять в Telegram
+DRY_RUN = True
+
 # Фиксированная шапка канала
 CHANNEL_HEADER = "Что ты не знал"
 
@@ -54,7 +58,10 @@ CHANNEL_HEADER = "Что ты не знал"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(LOG_FILE_PATH, encoding="utf-8"),
+    ],
 )
 log = logging.getLogger("facts_bot")
 
@@ -707,7 +714,7 @@ def has_strict_fact_block(text: str) -> bool:
     parts = text.strip().split("\n\n", 2)
     if len(parts) < 2:
         return False
-    first_block = parts[1]  # parts[0] = headline, parts[1] = first block
+    first_block = parts[1]
 
     has_year = bool(re.search(r"19\d{2}|20\d{2}", first_block))
     has_number = bool(re.search(r"\d", first_block))
@@ -774,20 +781,30 @@ def call_ai(cfg: Dict, article: str) -> str:
 
 
 # -------------------------
-# TELEGRAM
+# TELEGRAM / DRY-RUN
 # -------------------------
 def send_telegram(cfg: Dict, text: str, url: str) -> None:
-    # Фиксированная шапка канала перед каждым постом
     full_post = f"{CHANNEL_HEADER}\n\n{text}"
     msg = f"{full_post}\n\nИсточник: {url}"
     if len(msg) > TELEGRAM_LIMIT:
         msg = msg[:TELEGRAM_LIMIT]
-    resp = requests.post(
-        f"https://api.telegram.org/bot{cfg['tg_token']}/sendMessage",
-        json={"chat_id": cfg["tg_chat"], "text": msg},
-    )
-    resp.raise_for_status()
-    save_post(text)  # сохраняем без шапки — чтобы антидубликатор работал корректно
+
+    if globals().get("DRY_RUN", False):
+        print("\n" + "=" * 80)
+        print("DRY RUN — сообщение НЕ отправлено в Telegram")
+        print("=" * 80)
+        print(msg)
+        print("=" * 80 + "\n")
+        log.info("DRY RUN: post printed to console instead of sending to Telegram")
+    else:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{cfg['tg_token']}/sendMessage",
+            json={"chat_id": cfg["tg_chat"], "text": msg},
+        )
+        resp.raise_for_status()
+        log.info("Post sent to Telegram")
+
+    save_post(text)
     topic_words = extract_topic_words(text)
     save_topic(topic_words)
     log.info(f"Saved topic keywords: {topic_words}")
@@ -819,11 +836,11 @@ def mark_used(url: str, article_url: str, used_urls: Set[str]) -> None:
 # MAIN
 # -------------------------
 def main() -> None:
-    log.info("Starting generator")
+    log.info("Starting generator (DRY_RUN=%s)", DRY_RUN)
     cfg = load_config()
 
     missing = [k for k in ("ai_url", "ai_model", "ai_key", "tg_token", "tg_chat") if not cfg.get(k)]
-    if missing:
+    if missing and not DRY_RUN:
         log.error(f"Missing config values: {', '.join(missing)}")
         return
 
@@ -944,7 +961,7 @@ def main() -> None:
                 mark_used(url, article_url, used_urls)
                 continue
 
-            # --- Send ---
+            # --- Send or DRY-RUN ---
             send_telegram(cfg, post, article_url)
             mark_used(url, article_url, used_urls)
 
@@ -952,7 +969,7 @@ def main() -> None:
             if len(recent_domains) > MAX_RECENT_DOMAINS:
                 recent_domains.pop(0)
 
-            log.info("Post sent successfully")
+            log.info("Post processed successfully")
             return
 
         except Exception as e:
@@ -964,3 +981,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
