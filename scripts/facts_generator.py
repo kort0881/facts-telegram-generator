@@ -7,21 +7,20 @@ Improved Telegram fact post generator
 
 import os
 import random
-import requests
-import yaml
-import logging
-import sys
 import re
+import sys
 import json
+import logging
 from typing import List, Set, Dict, Tuple
 from collections import Counter
 
+import requests
+import yaml
 from bs4 import BeautifulSoup
 
-# =========================
+# -------------------------
 # CONFIG FILES
-# =========================
-
+# -------------------------
 CONFIG_PATH = "config.yaml"
 LINKS_PATH = "links.txt"
 USED_LINKS_PATH = "used_links.txt"
@@ -29,16 +28,15 @@ DEAD_LINKS_PATH = "dead_links.txt"
 POSTS_LOG_PATH = "used_posts.txt"
 TOPICS_LOG_PATH = "used_topics.txt"   # тематический трекер
 
-# =========================
-# SETTINGS
-# =========================
-
+# -------------------------
+# SETTINGS (можно переопределить в config.yaml)
+# -------------------------
 MAX_ARTICLE_CHARS = 2500
-MAX_FETCH_ATTEMPTS = 50          # больше попыток, пусть лучше долго ищет нормальный факт
+MAX_FETCH_ATTEMPTS = 50
 HTTP_TIMEOUT = 20
 TELEGRAM_LIMIT = 4096
 
-# анти-дубликатор
+# анти‑дубликатор
 RECENT_SIMILARITY_THRESHOLD = 0.45
 BIGRAM_SIMILARITY_THRESHOLD = 0.30
 SIMILARITY_WINDOW = 50
@@ -48,143 +46,150 @@ MAX_STORED_POSTS = 300
 TOPIC_BLOCK_WINDOW = 10
 TOPIC_TOP_WORDS = 8
 
-# =========================
+# -------------------------
 # LOGGING
-# =========================
-
+# -------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
-
 log = logging.getLogger("facts_bot")
 
-# =========================
-# CONFIG
-# =========================
 
-
-def load_config():
+# -------------------------
+# CONFIG LOADING
+# -------------------------
+def load_config() -> Dict:
+    """Читает config.yaml и возвращает словарь с настройками."""
+    if not os.path.exists(CONFIG_PATH):
+        log.warning(f"Config file {CONFIG_PATH} not found, using defaults")
+        return {}
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+        data = yaml.safe_load(f) or {}
 
-    return {
-        "ai_url": data["ai"]["url"],
-        "ai_model": data["ai"]["model"],
-        "ai_key": os.environ.get("GROQ_API_KEY"),
-        "tg_token": os.environ.get("TG_BOT_TOKEN"),
-        "tg_chat": os.environ.get("TG_CHAT_ID"),
+    # Позволяем переопределить любые глобальные константы через config
+    cfg = {
+        "ai_url": data.get("ai", {}).get("url", ""),
+        "ai_model": data.get("ai", {}).get("model", ""),
+        "ai_key": os.environ.get("GROQ_API_KEY", ""),
+        "tg_token": os.environ.get("TG_BOT_TOKEN", ""),
+        "tg_chat": os.environ.get("TG_CHAT_ID", ""),
     }
+    # Обновляем глобальные параметры, если они заданы в config
+    for key in [
+        "MAX_ARTICLE_CHARS",
+        "MAX_FETCH_ATTEMPTS",
+        "HTTP_TIMEOUT",
+        "TELEGRAM_LIMIT",
+        "RECENT_SIMILARITY_THRESHOLD",
+        "BIGRAM_SIMILARITY_THRESHOLD",
+        "SIMILARITY_WINDOW",
+        "MAX_STORED_POSTS",
+        "TOPIC_BLOCK_WINDOW",
+        "TOPIC_TOP_WORDS",
+    ]:
+        if key in data:
+            globals()[key] = data[key]
+            cfg[key.lower()] = data[key]
+    return cfg
 
-# =========================
-# LINK LOADING
-# =========================
 
-
-def load_links():
-    links = []
-
+# -------------------------
+# LINK LOADING (поддерживает обычные URL и markdown‑ссылки)
+# -------------------------
+def load_links() -> List[str]:
+    """Читает links.txt и возвращает список чистых URL."""
+    links: List[str] = []
+    url_pattern = re.compile(r'https?://[^\s)]+')
     with open(LINKS_PATH, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-
-            if not line:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#"):
                 continue
-
-            if line.startswith("#"):
-                continue
-
-            if line.startswith("["):
-                continue
-
+            # Прямой URL
             if line.startswith("http"):
                 links.append(line)
-
+                continue
+            # Markdown‑ссылка вида [текст](url) или просто url в скобках
+            match = url_pattern.search(line)
+            if match:
+                links.append(match.group(0))
+    log.info(f"Loaded {len(links)} source links")
     return links
 
 
-def load_list(path):
+def load_list(path: str) -> Set[str]:
     if not os.path.exists(path):
         return set()
-
     with open(path, "r", encoding="utf-8") as f:
         return {x.strip() for x in f if x.strip()}
 
 
-def save_line(path, line):
+def save_line(path: str, line: str) -> None:
     with open(path, "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
-# =========================
-# HTTP
-# =========================
 
+# -------------------------
+# HTTP HELPERS
+# -------------------------
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) rv:124.0 Gecko/20100101 Firefox/124.0",
+]
 
-def http_get(url):
+def http_get(url: str) -> requests.Response | None:
+    """Выполняет GET‑запрос с ротацией User‑Agent."""
+    headers = {"User-Agent": random.choice(USER_AGENTS)}
     try:
-        r = requests.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=HTTP_TIMEOUT,
-        )
-
+        r = requests.get(url, headers=headers, timeout=HTTP_TIMEOUT)
         if r.status_code >= 400:
+            log.debug(f"Bad status {r.status_code} for {url}")
             return None
-
         return r
-
-    except Exception:
+    except Exception as e:
+        log.debug(f"Request error for {url}: {e}")
         return None
 
-# =========================
+
+# -------------------------
 # ARTICLE EXTRACTION
-# =========================
-
-
-def extract_article_links(url):
+# -------------------------
+def extract_article_links(url: str) -> List[str]:
+    """На странице‑категории собирает ссылки на статьи."""
     r = http_get(url)
-
     if not r:
         return []
-
     soup = BeautifulSoup(r.text, "html.parser")
-
     links = []
-
     for a in soup.find_all("a", href=True):
         href = a["href"]
-
         if href.startswith("/"):
-            href = requests.compat.urljoin(url, href)
-
+            from urllib.parse import urljoin
+            href = urljoin(url, href)
         if any(x in href for x in [
-            "/article/",
-            "/news/",
-            "/story/",
-            "/202",
-            "/post",
+            "/article/", "/news/", "/story/", "/202", "/post",
         ]):
             links.append(href)
+    # Убираем дубликаты и ограничиваем количество
+    return list(dict.fromkeys(links))[:20]
 
-    return list(set(links))[:20]
 
-
-def extract_text(html):
+def extract_text(html: str) -> str:
+    """Из HTML выводит чистый текст (параграфы)."""
     soup = BeautifulSoup(html, "html.parser")
     paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
     text = "\n".join(paragraphs)
     return text[:MAX_ARTICLE_CHARS]
 
 
-def fetch_article(url, used_urls, dead_urls):
+def fetch_article(url: str, used_urls: Set[str], dead_urls: Set[str]) -> Tuple[str | None, str | None]:
     """
-    Получает статью по url.
-    Если url — страница-категория, извлекает список статей и выбирает
-    одну из неиспользованных.
-    Возвращает (article_url, text) или (None, None).
+    Возвращает (article_url, text).
+    Если url – категория, выбирает одну из свежих статей.
     """
-
     is_category = any(x in url for x in [
         "history", "culture", "brain", "ideas", "topic",
         "category", "lifeandstyle", "subject", "essays",
@@ -192,86 +197,76 @@ def fetch_article(url, used_urls, dead_urls):
     ])
 
     if is_category:
-        articles = extract_article_links(url)
-        articles = [a for a in articles if a not in used_urls and a not in dead_urls]
-
-        if not articles:
-            log.info(f"No fresh articles found on category page: {url}")
+        candidates = extract_article_links(url)
+        candidates = [c for c in candidates if c not in used_urls and c not in dead_urls]
+        if not candidates:
+            log.info(f"No fresh articles on category page: {url}")
             return None, None
-
-        random.shuffle(articles)
-
-        for article_url in articles:
+        random.shuffle(candidates)
+        for article_url in candidates:
             log.info(f"Trying article: {article_url}")
             r = http_get(article_url)
-
             if not r:
                 save_line(DEAD_LINKS_PATH, article_url)
                 dead_urls.add(article_url)
                 continue
-
             text = extract_text(r.text)
-
             if len(text) < 300:
-                log.info(f"Too short, skipping: {article_url}")
+                log.info(f"Too short (<300), skipping: {article_url}")
                 continue
-
             return article_url, text
-
         return None, None
 
+    # Обычная страница
     r = http_get(url)
-
     if not r:
         return None, None
-
     text = extract_text(r.text)
-
     if len(text) < 300:
+        log.info(f"Too short (<300), skipping: {url}")
         return None, None
-
     return url, text
 
-# =========================
+
+# -------------------------
 # AI PROMPT
-# =========================
-
+# -------------------------
 PROMPT = """
-Ты пишешь пост для Telegram-канала «Что ты не знал».
-
-Ты — автор живого, креативного канала с фактами для аудитории 18–35 лет. Твоя задача — рассказывать ОДИН яркий факт коротко, конкретно и по‑человечески, как другу в чате.
+Ты пишешь пост для Telegram‑канала «Что ты не знал».
+Ты — автор живого, креативного канала с фактами для аудитории 18–35 лет.
+Задача — рассказать ОДИН яркий факт коротко, конкретно и по‑человечески.
 
 Формат поста (строго соблюдай структуру и пустые строки):
 
 1 строка — короткий цепляющий заголовок + 1–2 эмодзи.
-Обязательные правила для заголовка:
+Обязательные правила:
 - Не начинай каждый заголовок с «Что ты не знал».
 - Используй разные шаблоны: «Факт дня: …», «Мозг вскипает от этого: …», «Неочевидная штука про …», «Вот что скрывается за …».
-- Допускается использовать «Что ты не знал» максимум в каждом третьем посте.
+- «Что ты не знал» допускается максимум в каждом третьем посте.
 
-1 блок (2–3 предложения) — один КОНКРЕТНЫЙ факт из текста.
-ЖЁСТКОЕ ТРЕБОВАНИЕ: в первом блоке ОБЯЗАТЕЛЬНО должен присутствовать хотя бы ОДИН из следующих элементов:
+1 блок (2–3 предложения) — один КОНКРЕТНЫЙ факт.
+Требование: в этом блоке ОБЯЗАТЕЛЬНО должен быть хотя бы ОДИН из элементов:
 - конкретное число или процент (например: «91% участников», «в 3 раза быстрее»);
 - год или диапазон дат (например: «в 1987 году», «с 2010 по 2020»);
 - имя конкретного человека или название места/проекта;
 - краткое описание эксперимента: что сделали и что получилось.
-1 блок должен ощущаться как мини-история или сцена: не абстрактное «каждый год находят», а 1–2 конкретных эпизода (кто, где, что нашли/сделали).
+Блок должен ощущаться как мини‑история (кто, где, что нашли/сделали).
 Запрещены пустые формулировки без опоры на конкретный факт.
 Можно добавить 1 уместный эмодзи в конце одного из предложений.
 
 пустая строка
 
 2 блок (2–3 предложения) — простое объяснение:
-- почему этот факт важен, что он меняет в понимании темы;
-- можно сравнить «как мы обычно думаем» и «что показывает этот пример»;
-- используй разговорный тон: как будто объясняешь другу, а не пишешь статью;
+- почему факт важен, как меняет понимание темы;
+- можно сравнить «как мы обычно думаем» и «что показывает пример»;
+- разговорный тон, как объяснение другу;
 - можно добавить короткую живую фразу («звучит странно, но так и есть», «раньше об этом вообще не думали»).
 
 пустая строка
 
 3 блок (1–2 предложения) — практический вывод:
-- не реклама и не призыв «подписаться» или «следить за новостями»;
-- это личное, прикладное действие для читателя: как можно иначе думать/поступать в похожей ситуации;
+- не реклама и не призыв «подписаться»/«следить за новостями»;
+- личное, прикладное действие для читателя;
 - никаких общих абстракций, только то, что читатель может реально применить;
 - можно добавить 1 эмодзи в конце предложения, если уместно.
 
@@ -280,7 +275,7 @@ PROMPT = """
 Финал — вопрос читателю:
 - вопрос должен цеплять личный опыт или позицию («было ли у тебя так?», «смог бы ты так поступить?», «готов ли ты проверить это на себе?»);
 - избегай общих вопросов вроде «что вы думаете по этому поводу?»;
-- не начинай каждый вопрос словами «как ты думаешь» или «что бы ты сделал», меняй конструкции, используй разные подходы.
+- меняй конструкции, не начинай каждый вопрос одинаково.
 
 Последняя строка — 3–4 хэштега на русском:
 - сначала тема (#психология, #история, #наука, #политика, #здоровье, #привычки и т.п.), потом уточнения;
@@ -289,10 +284,10 @@ PROMPT = """
 
 Стиль и длина:
 - Пиши коротко, живо, разговорным русским, без канцелярита и школьных формулировок.
-- В каждом посте должен быть ОДИН главный факт и ОДНА понятная мысль вокруг него.
-- Цель по длине поста — 700–900 символов (но не больше 900).
-- Чередуй короткие и чуть более длинные предложения, чтобы текст читался легко.
-- Можно использовать максимум 1–2 выделения **жирным** для самых важных слов, но не злоупотребляй.
+- ОДИН главный факт и ОДНА понятная мысль вокруг него.
+- Цель по длине — 700–900 символов (но не более 900).
+- Чередуй короткие и чуть более длинные предложения.
+- Максимум 1–2 выделения **жирным** для самых важных слов.
 - Не копируй формулировки из примеров, придумывай свои.
 
 Запрещённые формулировки — НИКОГДА не использовать:
@@ -311,20 +306,17 @@ PROMPT = """
 - Не делай два поста подряд на одну тему с тем же углом.
 - Не начинай каждый пост одинаково. Меняй заходы: «Представь ситуацию…», «Обычно мы думаем, что…», «Есть одна странная деталь…».
 
-Если в исходном тексте НЕТ яркой цифры, года, имени или конкретного кейса, из которого можно сделать интересный факт, лучше верни короткий ответ «SKIP», чем размытый пост.
+Если в исходном тексте НЕТ яркой цифры, года, имени или конкретного кейса — верни короткий ответ «SKIP», а не размытый пост.
 
-Допустимая длина всего поста — максимум 900 символов, цель 700–900.
-
-Твоя задача: по исходному тексту ниже придумать НОВЫЙ пост в этом стиле и структуре.
+Допустимая длина поста — максимум 900 символов, цель 700–900.
 
 Исходный текст статьи:
 {article}
 """
 
-# =========================
+# -------------------------
 # BANNED PHRASES
-# =========================
-
+# -------------------------
 BANNED_PHRASES = [
     "проливает новый свет",
     "мы можем глубже понять эпоху",
@@ -361,10 +353,9 @@ BANNED_PHRASES = [
     "расскажи друзьям",
 ]
 
-# =========================
-# STOP-WORDS ДЛЯ ТЕМАТИЧЕСКОГО ТРЕКЕРА
-# =========================
-
+# -------------------------
+# STOP‑WORDS ДЛЯ ТЕМАТИЧЕСКОГО ТРЕКЕРА
+# -------------------------
 STOP_WORDS = {
     "что", "это", "как", "для", "или", "при", "так", "все", "они",
     "был", "она", "его", "её", "он", "мы", "вы", "но", "да", "нет",
@@ -378,11 +369,9 @@ STOP_WORDS = {
     "загугли", "глубже", "хочешь", "копнуть", "если",
 }
 
-# =========================
+# -------------------------
 # TEXT NORMALISATION
-# =========================
-
-
+# -------------------------
 def normalize_text(s: str) -> Set[str]:
     s = s.lower()
     s = re.sub(r"[^a-zа-я0-9ё]+", " ", s)
@@ -404,11 +393,10 @@ def extract_topic_words(s: str, top_n: int = TOPIC_TOP_WORDS) -> List[str]:
     counted = Counter(words)
     return [w for w, _ in counted.most_common(top_n)]
 
-# =========================
+
+# -------------------------
 # SIMILARITY METRICS
-# =========================
-
-
+# -------------------------
 def jaccard_similarity(a: str, b: str) -> float:
     sa = normalize_text(a)
     sb = normalize_text(b)
@@ -432,11 +420,10 @@ def bigram_jaccard(a: str, b: str) -> float:
 def combined_similarity(a: str, b: str) -> float:
     return 0.6 * jaccard_similarity(a, b) + 0.4 * bigram_jaccard(a, b)
 
-# =========================
+
+# -------------------------
 # POSTS STORAGE
-# =========================
-
-
+# -------------------------
 def load_posts(path: str = POSTS_LOG_PATH) -> List[str]:
     if not os.path.exists(path):
         return []
@@ -444,20 +431,20 @@ def load_posts(path: str = POSTS_LOG_PATH) -> List[str]:
         return [line.strip() for line in f if line.strip()]
 
 
-def save_post(text: str, path: str = POSTS_LOG_PATH):
+def save_post(text: str, path: str = POSTS_LOG_PATH) -> None:
     posts = load_posts(path)
-    posts.append(text.replace("\n", " \\n "))
+    # Сохраняем с экранированными переносами для удобного чтения
+    posts.append(text.replace("\n", " \\\\n "))
     if len(posts) > MAX_STORED_POSTS:
         posts = posts[-MAX_STORED_POSTS:]
     with open(path, "w", encoding="utf-8") as f:
         for p in posts:
             f.write(p + "\n")
 
-# =========================
+
+# -------------------------
 # TOPIC TRACKER
-# =========================
-
-
+# -------------------------
 def load_recent_topics(path: str = TOPICS_LOG_PATH) -> List[List[str]]:
     if not os.path.exists(path):
         return []
@@ -474,7 +461,7 @@ def load_recent_topics(path: str = TOPICS_LOG_PATH) -> List[List[str]]:
     return result
 
 
-def save_topic(words: List[str], path: str = TOPICS_LOG_PATH):
+def save_topic(words: List[str], path: str = TOPICS_LOG_PATH) -> None:
     topics = load_recent_topics(path)
     topics.append(words)
     max_topics = TOPIC_BLOCK_WINDOW * 3
@@ -489,9 +476,7 @@ def is_topic_repeated(new_post: str, recent_topics: List[List[str]]) -> bool:
     new_words = set(extract_topic_words(new_post))
     if not new_words:
         return False
-
     window = recent_topics[-TOPIC_BLOCK_WINDOW:]
-
     for old_words in window:
         old_set = set(old_words)
         if not old_set:
@@ -504,14 +489,12 @@ def is_topic_repeated(new_post: str, recent_topics: List[List[str]]) -> bool:
                 f"(shared: {new_words & old_set})"
             )
             return True
-
     return False
 
-# =========================
+
+# -------------------------
 # DUPLICATE & BANALITY CHECKS
-# =========================
-
-
+# -------------------------
 def is_too_similar_to_previous(
     new_post: str,
     old_posts: List[str],
@@ -519,21 +502,17 @@ def is_too_similar_to_previous(
     bigram_threshold: float = BIGRAM_SIMILARITY_THRESHOLD,
 ) -> bool:
     window = old_posts[-SIMILARITY_WINDOW:]
-
     for old in window:
         if not old:
             continue
-
         word_sim = jaccard_similarity(new_post, old)
         if word_sim >= word_threshold:
             log.info(f"Word similarity {word_sim:.2f} >= {word_threshold} — duplicate")
             return True
-
         bigram_sim = bigram_jaccard(new_post, old)
         if bigram_sim >= bigram_threshold:
             log.info(f"Bigram similarity {bigram_sim:.2f} >= {bigram_threshold} — duplicate")
             return True
-
     return False
 
 
@@ -544,10 +523,10 @@ def contains_banned_phrases(text: str) -> bool:
             return True
     return False
 
-# =========================
-# POST CLEANUP & CONCRETENESS CHECK
-# =========================
 
+# -------------------------
+# POST CLEANUP & CONCRETENESS CHECK
+# -------------------------
 _GOOGLE_HINT_PATTERNS = re.compile(
     r"(если хочешь (копнуть глубже|узнать больше)|загугли|узнай больше в интернете"
     r"|копнуть глубже|поищи в интернете)",
@@ -566,14 +545,12 @@ def strip_google_hint(text: str) -> str:
     match = _GOOGLE_HINT_PATTERNS.search(text)
     if not match:
         return text
-
     cut_pos = match.start()
     newline_pos = text.rfind("\n", 0, cut_pos)
     if newline_pos != -1:
         cut_pos = newline_pos
-
     cleaned = text[:cut_pos].rstrip()
-    log.info("Stripped google-hint block from post")
+    log.info("Stripped google‑hint block from post")
     return cleaned
 
 
@@ -602,16 +579,13 @@ def has_strong_fact(text: str) -> bool:
 def looks_like_announcement(text: str) -> bool:
     if len(text) < 350:
         return True
-
     sentences = re.split(r"[.!?]+", text)
     sentences = [s.strip() for s in sentences if s.strip()]
     if len(sentences) < 5:
         return True
-
     first_line = text.strip().split("\n", 1)[0].lower()
     if "каждый год" in first_line or "часто происходит" in first_line:
         return True
-
     return False
 
 
@@ -620,84 +594,75 @@ def normalize_blank_lines(text: str) -> str:
     lines = [line.rstrip() for line in text.split("\n")]
     return "\n".join(lines)
 
-# =========================
+
+# -------------------------
 # AI CALL
-# =========================
-
-
-def call_ai(cfg, article):
+# -------------------------
+def call_ai(cfg: Dict, article: str) -> str:
     payload = {
         "model": cfg["ai_model"],
-        "messages": [
-            {"role": "user", "content": PROMPT.format(article=article)}
-        ],
+        "messages": [{"role": "user", "content": PROMPT.format(article=article)}],
         "max_tokens": 600,
         "temperature": 0.9,
         "top_p": 0.9,
     }
-
     headers = {
         "Authorization": f"Bearer {cfg['ai_key']}",
         "Content-Type": "application/json",
     }
-
     r = requests.post(cfg["ai_url"], json=payload, headers=headers, timeout=60)
     r.raise_for_status()
-
     data = r.json()
     return data["choices"][0]["message"]["content"].strip()
 
-# =========================
+
+# -------------------------
 # TELEGRAM
-# =========================
-
-
-def send_telegram(cfg, text, url):
+# -------------------------
+def send_telegram(cfg: Dict, text: str, url: str) -> None:
     msg = f"{text}\n\nИсточник: {url}"
-
     if len(msg) > TELEGRAM_LIMIT:
         msg = msg[:TELEGRAM_LIMIT]
-
     resp = requests.post(
         f"https://api.telegram.org/bot{cfg['tg_token']}/sendMessage",
-        json={
-            "chat_id": cfg["tg_chat"],
-            "text": msg,
-        },
+        json={"chat_id": cfg["tg_chat"], "text": msg},
     )
     resp.raise_for_status()
-
     save_post(text)
     topic_words = extract_topic_words(text)
     save_topic(topic_words)
     log.info(f"Saved topic keywords: {topic_words}")
 
-# =========================
+
+# -------------------------
 # SOURCE PICKER
-# =========================
-
-
-def pick_sources(all_links):
+# -------------------------
+def pick_sources(all_links: List[str]) -> Tuple[List[str], Set[str], Set[str]]:
     used = load_list(USED_LINKS_PATH)
     dead = load_list(DEAD_LINKS_PATH)
-
     available = [x for x in all_links if x not in used and x not in dead]
-
     random.shuffle(available)
     return available[:MAX_FETCH_ATTEMPTS], used, dead
 
-# =========================
+
+# -------------------------
 # MAIN
-# =========================
-
-
-def main():
+# -------------------------
+def main() -> None:
     log.info("Starting generator")
-
     cfg = load_config()
-    links = load_links()
-    candidates, used_urls, dead_urls = pick_sources(links)
+    # Проверяем наличие обязательных параметров
+    missing = [k for k in ("ai_url", "ai_model", "ai_key", "tg_token", "tg_chat") if not cfg.get(k)]
+    if missing:
+        log.error(f"Missing config values: {', '.join(missing)}")
+        return
 
+    links = load_links()
+    if not links:
+        log.error("No links loaded – check links.txt")
+        return
+
+    candidates, used_urls, dead_urls = pick_sources(links)
     if not candidates:
         log.warning("No available sources. Clear used_links.txt to reset.")
         return
@@ -707,7 +672,6 @@ def main():
 
     for url in candidates:
         log.info(f"Trying source: {url}")
-
         article_url, text = fetch_article(url, used_urls, dead_urls)
 
         if not article_url or not text:
@@ -792,3 +756,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
