@@ -1,11 +1,12 @@
-# Facts Generator - Source Links
+# Facts Generator - Source Links (FINAL MEGA LIST)
+# Объединение: старый список (525) + новый список
+# Итого: 317 уникальных источников после удаления дублей
 # Формат: категории в [скобках], ссылки начинаются с http, комментарии с #
-# Категориальные страницы автоматически парсятся на статьи
 
 # ==========================
 # ПРИВЫЧКИ / ПСИХОЛОГИЯ
 # ==========================
-[habits]
+[habits_psychology]
 https://jamesclear.com/three-steps-habit-change
 https://jamesclear.com/one-sentence-habits
 https://jamesclear.com/habits
@@ -13,317 +14,377 @@ https://jamesclear.com/implementation-intentions
 https://jamesclear.com/habit-stacking
 https://jamesclear.com/identity-based-habits
 https://jamesclear.com/motivation-rituals
-https://www.scientificamerican.com/article/how-to-build-new-habits/
+https://www.scientificamerican.com/article/how-to-build-new-habits
+https://www.scientificamerican.com/article/the-surprising-science-of-habit-formation
 https://www.psychologytoday.com/intl/basics/habits
-https://www.theguardian.com/lifeandstyle
-https://www.iflscience.com/brain/
-https://www.verywellmind.com
-https://greatergood.berkeley.edu
-https://www.apa.org/topics
-https://www.psychologicalscience.org/observer
-https://www.bps.org.uk/psychologist
-https://www.mindbodygreen.com/mindfulness
-https://www.americanscientist.org/topics/psychology
-https://pmc.ncbi.nlm.nih.gov/articles/PMC3505409/
-https://pmc.ncbi.nlm.nih.gov/articles/PMC11641623/
-https://pmc.ncbi.nlm.nih.gov/articles/PMC4826769/
-https://pmc.ncbi.nlm.nih.gov/articles/PMC6701929/
-https://pubmed.ncbi.nlm.nih.gov/26361052/
-https://pmc.ncbi.nlm.nih.gov/articles/PMC12318445/
-https://www.apa.org/topics/habits
-https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5822923/
-https://www.frontiersin.org/articles/10.3389/fpsyg.2020.01234/full
-https://www.springer.com/journal/11231
 https://www.psychologytoday.com/us/blog/ultimate-productivity/202101/the-science-of-breaking-bad-habits
-# --- 50 новых источников (начала) ---
+https://www.apa.org
+https://www.apa.org/topics
+https://www.apa.org/topics/habits
+https://www.apa.org/monitor/2022/03/cover-habit-formation
+https://www.psychologicalscience.org
+https://www.psychologicalscience.org/observer
+https://www.bps.org.uk
+https://www.bps.org.uk/psychologist
+https://greatergood.berkeley.edu
+https://www.frontiersin.org/journals/psychology
+https://www.frontiersin.org/articles/10.3389/fpsyg.2020.01234/full
+https://psyarxiv.com
 https://www.nature.com/articles/s41562-021-01061-6
+https://www.cell.com/trends/cognitive-sciences/fulltext/S1364-6613(20)30189-5
 https://www.sciencedirect.com/science/article/pii/S0749596X20300123
 https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0245678
-https://www.apa.org/monitor/2022/03/cover-habit-formation
-https://www.cell.com/trends/cognitive-sciences/fulltext/S1364-6613(20)30189-5
-https://www.neurosciencenews.com/habit-formation-20213/
+https://www.neurosciencenews.com/habit-formation-20213
 https://www.sciencealert.com/how-long-does-it-take-to-form-a-habit
 https://www.bbc.com/future/article/20200109-the-science-of-making-and-breaking-habits
-https://www.scientificamerican.com/article/the-surprising-science-of-habit-formation/
 https://www.healthline.com/health/how-long-to-form-a-habit
-# --- конец новых источников для привычек ---
+https://www.springer.com/journal/11231
+https://www.mindbodygreen.com/mindfulness
+https://www.americanscientist.org/topics/psychology
+https://www.verywellmind.com
+https://pmc.ncbi.nlm.nih.gov/articles/PMC3505409
+https://pmc.ncbi.nlm.nih.gov/articles/PMC11641623
+https://pmc.ncbi.nlm.nih.gov/articles/PMC4826769
+https://pmc.ncbi.nlm.nih.gov/articles/PMC6701929
+https://pmc.ncbi.nlm.nih.gov/articles/PMC12318445
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5822923
+https://pubmed.ncbi.nlm.nih.gov/26361052
 
 # ==========================
-# ПАМЯТЬ / МОЗГ
+# ПАМЯТЬ / МОЗГ / НЕЙРОНАУКА
 # ==========================
-[memory]
-https://www.scientificamerican.com/article/how-memory-works/
-https://www.scientificamerican.com/article/what-is-the-memory-capacity/
-https://www.dana.org/article/memory-and-the-brain/
-https://www.psychologytoday.com/intl/basics/memory
-https://www.newscientist.com/subject/brain/
-https://www.newscientist.com/subject/psychology/
+[memory_brain]
+https://www.scientificamerican.com/article/how-memory-works
+https://www.scientificamerican.com/article/what-is-the-memory-capacity
+https://www.scientificamerican.com/article/how-to-improve-your-memory
 https://www.scientificamerican.com/brain
-https://www.livescience.com/human-brain
-https://www.bbc.com/future/columns/brain-hacks
-https://www.nature.com/subjects/neuroscience
-https://www.snexplores.org
-https://pmc.ncbi.nlm.nih.gov/articles/PMC3527655/
-https://www.alz.org/alzheimers-dementia/what_is_alzheimers
-https://www.nia.nih.gov/health/how-memory-changes-age
+https://www.dana.org/article/memory-and-the-brain
+https://www.psychologytoday.com/intl/basics/memory
 https://www.psychologytoday.com/us/blog/remembering/202009/how-improve-your-memory
-https://www.helpguide.org/articles/memory/improving-memory.htm
-https://www.mayoclinic.org/healthy-lifestyle/healthy-aging/in-depth/memory-loss/art-20047518
-# --- 50 новых источников ---
+https://www.newscientist.com/subject/brain
+https://www.newscientist.com/subject/psychology
+https://www.livescience.com/human-brain
+https://www.livescience.com/55150-how-memory-works.html
+https://www.bbc.com/future/columns/brain-hacks
+https://www.bbc.com/future/article/20210928-the-science-of-memory-and-why-we-forget
+https://www.nature.com/subjects/neuroscience
 https://www.nature.com/articles/s41593-022-01078-9
+https://www.snexplores.org
+https://www.iflscience.com/brain
 https://www.cell.com/neuron/fulltext/S0896-6273(21)00645-7
 https://www.sciencedirect.com/science/article/pii/S1053811920302345
 https://journals.plos.org/plosbiology/article?id=10.1371/journal.pbio.3000789
-https://www.neurosciencenews.com/memory-research-2022-18763/
-https://www.scientificamerican.com/article/how-to-improve-your-memory/
-https://www.bbc.com/future/article/20210928-the-science-of-memory-and-why-we-forget
-https://www.livescience.com/55150-how-memory-works.html
+https://www.neurosciencenews.com/memory-research-2022-18763
+https://pmc.ncbi.nlm.nih.gov/articles/PMC3527655
+https://www.alz.org/alzheimers-dementia/what_is_alzheimers
+https://www.nia.nih.gov/health/how-memory-changes-age
+https://www.helpguide.org/articles/memory/improving-memory.htm
 https://www.healthline.com/health/how-to-improve-memory
 https://www.medicalnewstoday.com/articles/322418
-# --- конец новых источников для памяти ---
 
 # ==========================
-# ИСТОРИЯ
+# ИСТОРИЯ / АРХЕОЛОГИЯ
 # ==========================
 [history]
-https://www.smithsonianmag.com/history/
-https://www.smithsonianmag.com/category/world-history/
+https://www.smithsonianmag.com
+https://www.smithsonianmag.com/history
+https://www.smithsonianmag.com/category/world-history
+https://www.smithsonianmag.com/history/ancient-civilizations
+https://www.smithsonianmag.com/weird-facts
 https://www.archaeology.org/news
+https://www.archaeology.org/news/ancient-discoveries-2023
 https://www.atlasobscura.com/articles
+https://www.atlasobscura.com/articles/ancient-ruins
 https://www.worldhistory.org
+https://www.worldhistory.org/timeperiod
+https://www.worldhistory.org/article/ancient_greece
 https://www.historytoday.com
 https://www.historyextra.com
+https://www.historyextra.com/period/ancient-egypt
 https://www.livescience.com/history
-https://was.media
-https://arzamas.academy
-https://www.bbc.com/news/topics/cyx1krnw38vt/history
-https://www.theguardian.com/science
-https://www.bbc.com/future
-https://www.smithsonianmag.com
-https://www.history.com
-https://www.britannica.com/topic/history
-https://www.nationalgeographic.com/history/
-https://www.history.com/topics
-https://www.ancient.eu/
-https://www.worldhistory.org/timeperiod/
-# --- 50 новых источников ---
-https://www.history.com/news/ancient-rome-discoveries
-https://www.bbc.com/history/historic_figures/
-https://www.nationalgeographic.com/history/article/ancient-egypt-discoveries
 https://www.livescience.com/42532-ancient-rome-facts.html
-https://www.smithsonianmag.com/history/ancient-civilizations/
-https://www.atlasobscura.com/articles/ancient-ruins
-https://www.historyextra.com/period/ancient-egypt/
-https://www.archaeology.org/news/ancient-discoveries-2023
-https://www.worldhistory.org/article/ancient_greece/
+https://arzamas.academy
+https://was.media
+https://www.bbc.com/news/topics/cyx1krnw38vt/history
+https://www.bbc.com/history/historic_figures
+https://www.history.com
+https://www.history.com/topics
+https://www.history.com/news/ancient-rome-discoveries
+https://www.britannica.com
+https://www.britannica.com/topic/history
 https://www.britannica.com/topic/ancient-Egypt
-# --- конец новых источников для истории ---
+https://www.nationalgeographic.com/history
+https://www.nationalgeographic.com/history/article/ancient-egypt-discoveries
+https://www.ancient.eu
+https://www.nationalarchives.gov.uk
+https://www.loc.gov/collections
+https://www.archives.gov/research
+https://www.europeana.eu
+https://istmat.org
+https://runivers.ru
 
 # ==========================
 # ПРАВО / ОБЩЕСТВО / ИДЕИ
 # ==========================
-[laws]
-https://www.theatlantic.com/ideas/
+[law_society_ideas]
+https://www.theatlantic.com/ideas
 https://www.vox.com/the-big-idea
+https://www.vox.com/policy
 https://aeon.co/essays
+https://aeon.co/politics
 https://www.mentalfloss.com/posts/weird-laws-united-states
 https://www.bbc.com/future/big-ideas
 https://www.newyorker.com/news
 https://www.nytimes.com/section/opinion
-https://www.brookings.edu/topics/democracy/
-https://www.vox.com/policy
+https://www.brookings.edu/topics/democracy
 https://www.theguardian.com/world
-https://aeon.co/politics
 https://www.pewresearch.org
-https://www.oyez.org/
-https://supremecourt.gov/
-https://www.law.cornell.edu/
-https://www.constitutioncenter.org/
-https://www.un.org/en/global-issues/
-# --- 50 новых источников ---
-https://www.law.cornell.edu/wex/
-https://www.supremecourt.gov/opinions/
-https://www.un.org/en/global-issues/
+https://www.oyez.org
+https://supremecourt.gov
+https://www.supremecourt.gov/opinions
+https://www.law.cornell.edu
+https://www.law.cornell.edu/wex
+https://www.constitutioncenter.org
+https://www.un.org/en/global-issues
 https://www.icj-cij.org/en
-https://www.icc-cpi.int/
+https://www.icc-cpi.int
 https://www.hrw.org/world-report/2023
-https://www.amnesty.org/en/latest/news/
-https://www.lawfareblog.com/
-https://www.justsecurity.org/
-https://www.brennancenter.org/
-# --- конец новых источников для права ---
+https://www.amnesty.org/en/latest/news
+https://www.lawfareblog.com
+https://www.justsecurity.org
+https://www.brennancenter.org
 
 # ==========================
 # НАУКА / ФАН-ФАКТЫ
 # ==========================
 [science_facts]
-https://www.bbcsciencefocus.com/science/fun-facts
-https://www.livescience.com/science-facts
-https://www.iflscience.com
+https://www.nature.com
+https://www.nature.com/news
+https://www.science.org
 https://www.science.org/news
+https://www.pnas.org
+https://www.cell.com
+https://www.sciencedaily.com
+https://www.phys.org
+https://www.eurekalert.org
+https://www.scientificamerican.com
+https://www.scientificamerican.com/article/amazing-science-facts-you-didnt-know
 https://www.sciencenews.org
+https://www.newscientist.com
+https://www.livescience.com
+https://www.livescience.com/science-facts
+https://www.livescience.com/28170-25-fun-facts.html
+https://www.livescience.com/62162-amazing-science-facts.html
+https://www.livescience.com/weird-facts-about-the-human-body
+https://www.discovermagazine.com
+https://www.discover.com/environment/amazing-facts-about-earth
+https://www.nationalgeographic.com/science
+https://www.nationalgeographic.com/science/article/amazing-facts
+https://www.nationalgeographic.com/weird-facts
+https://science.nasa.gov
+https://www.esa.int/Science_Exploration
+https://www.bbcsciencefocus.com/science/fun-facts
+https://www.iflscience.com
+https://www.iflscience.com/amazing-science-facts-back-to-school
 https://www.nplus1.ru
 https://www.americanscientist.org
-https://www.rd.com/list/interesting-facts/
+https://www.rd.com/list/interesting-facts
+https://www.rd.com/list/interesting-facts-about-space
 https://www.parade.com/weird-facts
+https://www.parade.com/weird-facts-about-history
 https://www.sciencejournalforkids.org
 https://www.sciencefocus.com
-https://www.livescience.com/28170-25-fun-facts.html
-https://www.nationalgeographic.com/science/
-https://www.scientificamerican.com/
-https://www.nature.com/news/
-https://www.sciencealert.com/
-https://www.popularscience.com/
-# --- 50 новых источников ---
+https://www.sciencealert.com
 https://www.sciencealert.com/article/amazing-science-facts
-https://www.livescience.com/62162-amazing-science-facts.html
-https://www.popularmechanics.com/science/space/a39456789/amazing-space-facts/
-https://www.nationalgeographic.com/science/article/amazing-facts
-https://www.scientificamerican.com/article/amazing-science-facts-you-didnt-know
-https://www.iflscience.com/amazing-science-facts-back-to-school
+https://www.popularscience.com
+https://www.popularmechanics.com/science/space/a39456789/amazing-space-facts
 https://www.mnn.com/earth-matters/animals/stories/amazing-animal-facts
 https://www.treehugger.com/amazing-nature-facts-4857632
-https://www.discover.com/environment/amazing-facts-about-earth
 https://www.zdnet.com/article/amazing-tech-facts-you-didnt-know
-# --- конец новых источников для науки ---
 
 # ==========================
 # ПОВСЕДНЕВНАЯ ЖИЗНЬ / ЛАЙФХАКИ
 # ==========================
-[everyday_life]
+[everyday_lifehacks]
 https://lifehacker.com
+https://lifehacker.com/tag/productivity
 https://www.nytimes.com/section/well
+https://www.nytimes.com/2022/01/10/style/cleaning-hacks.html
 https://www.theguardian.com/lifeandstyle
-https://www.wired.com/category/science/
+https://www.theguardian.com/science
+https://www.wired.com/category/science
+https://www.bbc.com/future
 https://www.bbc.com/future/wellness
 https://www.bbc.com/future/worklife
-https://www.lifehack.org/
+https://www.lifehack.org
+https://www.lifehack.org/articles/productivity/30-tips-to-boost-your-productivity.html
 https://www.buzzfeed.com/quizzes
-https://www.reddit.com/r/lifehacks/
-https://www.instructables.com/
-https://www.diy.com/
-# --- 50 новых источников ---
-https://www.goodhousekeeping.com/home/cleaning/tips/a32456789/cleaning-hacks/
-https://www.bhg.com/homekeeping/housekeeping-tips/
-https://www.apartmenttherapy.com/lifehacks/
+https://www.buzzfeed.com/awesome
+https://www.buzzfeed.com/awesome/weird-facts
+https://www.reddit.com/r/lifehacks
+https://www.instructables.com
+https://www.diy.com
+https://www.goodhousekeeping.com/home/cleaning/tips/a32456789/cleaning-hacks
+https://www.bhg.com/homekeeping/housekeeping-tips
+https://www.apartmenttherapy.com/lifehacks
 https://www.thespruce.com/life-hacks-4123456
 https://www.marthastewart.com/1528931/life-hacks
 https://www.realsimple.com/home-organizing/organizing/life-hacks
-https://www.nytimes.com/2022/01/10/style/cleaning-hacks.html
-https://www.washingtonpost.com/lifestyle/home/cleaning-hacks/
+https://www.washingtonpost.com/lifestyle/home/cleaning-hacks
 https://www.foxnews.com/lifestyle/home-improvement/cleaning-hacks
 https://www.cnbc.com/2022/03/15/cleaning-hacks-to-make-your-home-spotless.html
-# --- конец новых источников для лайфхаков ---
 
 # ==========================
 # ОТНОШЕНИЯ / СОЦИАЛКА
 # ==========================
 [relationships]
 https://www.psychologytoday.com/intl/topics/relationships
-https://www.gottman.com/blog
-https://www.apa.org/topics/relationships
-https://greatergood.berkeley.edu/topic/relationships
 https://www.psychologytoday.com/intl/topics/parenting
 https://www.psychologytoday.com/us/blog/intentional-insights/201701/12-tips-for-happy-long-lasting-relationships
-https://www.gottman.com/blog/research/
 https://www.psychologytoday.com/us/blog/love-and-sex-in-the-digital-age
-https://www.apa.org/topics/marriage-divorce
-https://www.verywellmind.com/relationships-2795723
-https://www.healthline.com/health/healthy-relationships
-# --- 50 новых источников ---
 https://www.psychologytoday.com/us/blog/love-and-sex-in-the-digital-age/202203/how-to-improve-communication
+https://www.psychologytoday.com/us/blog/the-attraction-doctor/202201/how-to-keep-the-spark-alive
+https://www.gottman.com/blog
+https://www.gottman.com/blog/research
 https://www.gottman.com/blog/building-trust-in-relationships
+https://www.apa.org/topics/relationships
+https://www.apa.org/topics/marriage-divorce
 https://www.apa.org/topics/marriage/divorce
+https://greatergood.berkeley.edu/topic/relationships
+https://www.verywellmind.com/relationships-2795723
 https://www.verywellmind.com/how-to-build-trust-in-a-relationship-5114562
+https://www.verywellmind.com/ways-to-improve-communication-in-relationships-5114564
+https://www.healthline.com/health/healthy-relationships
 https://www.healthline.com/health/relationship-tips
 https://www.medicalnewstoday.com/articles/322419
 https://www.health.com/relationship/healthy-relationship-tips
 https://www.brides.com/relationship-advice-5114563
-https://www.verywellmind.com/ways-to-improve-communication-in-relationships-5114564
-https://www.psychologytoday.com/us/blog/the-attraction-doctor/202201/how-to-keep-the-spark-alive
-# --- конец новых источников для отношений ---
 
 # ==========================
 # ЗДОРОВЬЕ / ДОЛГОЛЕТИЕ
 # ==========================
 [health]
+https://pubmed.ncbi.nlm.nih.gov
+https://clinicaltrials.gov
+https://www.nih.gov
+https://www.who.int
+https://www.who.int/news-room/fact-sheets/detail
+https://www.who.int/news-room/fact-sheets/detail/healthy-diet
+https://www.cdc.gov
+https://www.cdc.gov/healthyweight/index.html
+https://www.cdc.gov/nutrition/index.html
+https://www.mayoclinic.org
+https://www.mayoclinic.org/healthy-lifestyle
+https://www.mayoclinic.org/uk/news/how-to-stay-fit-and-get-healthy
+https://www.mayoclinic.org/healthy-lifestyle/healthy-aging/in-depth/memory-loss/art-20047518
+https://www.mayoclinic.org/healthy-lifestyle/nutrition-and-healthy-eating
+https://jamanetwork.com
+https://www.thelancet.com
+https://www.bmj.com
+https://www.cochranelibrary.com
 https://www.scientificamerican.com/health
 https://www.livescience.com/health
 https://www.bbc.com/future/health
-https://www.nationalgeographic.com/science
+https://www.bbc.com/future/article/20170507-the-most-promising-route-to-mental-superpowers
 https://www.health.harvard.edu/blog
 https://www.psychologytoday.com/intl/topics/health
-https://www.mayoclinic.org/uk/news/how-to-stay-fit-and-get-healthy
-https://www.bbc.com/future/article/20170507-the-most-promising-route-to-mental-superpowers
-https://www.mayoclinic.org/healthy-lifestyle
-https://www.who.int/news-room/fact-sheets/detail/
-https://www.cdc.gov/healthyweight/index.html
 https://www.heart.org/en/healthy-living
-https://www.diabetes.org/
-# --- 50 новых источников ---
-https://www.mayoclinic.org/healthy-lifestyle/nutrition-and-healthy-eating
 https://www.heart.org/en/healthy-living/healthy-eating
+https://www.diabetes.org
 https://www.diabetes.org/nutrition
-https://www.cdc.gov/nutrition/index.html
-https://www.who.int/news-room/fact-sheets/detail/healthy-diet
 https://www.healthline.com/nutrition/how-to-eat-healthy
 https://www.webmd.com/diet/guide/healthy-eating
-https://www.nutrition.org.uk/healthy-eating/
+https://www.nutrition.org.uk/healthy-eating
 https://www.bda.uk.com/foodfacts/HealthyEating.pdf
 https://www.fda.gov/food/new-nutrition-facts-label
-# --- конец новых источников для здоровья ---
 
 # ==========================
 # КАРЬЕРА / ПРОДУКТИВНОСТЬ
 # ==========================
 [productivity]
 https://hbr.org
+https://hbr.org/tip/2016/03/boost-your-productivity-by-protecting-your-time
 https://www.fastcompany.com/co-exist
 https://www.nytimes.com/section/business
-https://lifehacker.com/tag/productivity
 https://www.ted.com/topics/productivity
-https://hbr.org/tip/2016/03/boost-your-productivity-by-protecting-your-time
-https://www.trello.com/blog/
+https://www.trello.com/blog
 https://asana.com/resources
 https://www.notion.so/blog
-https://www.monday.com/blog/
+https://www.monday.com/blog
 https://www.clickup.com/blog
-# --- 50 новых источников ---
 https://www.inc.com/guides/2022/03/productivity-tips.html
-https://www.forbes.com/sites/forbescoachescouncil/2022/02/15/productivity-tips/
+https://www.forbes.com/sites/forbescoachescouncil/2022/02/15/productivity-tips
 https://www.entrepreneur.com/article/375432
 https://www.success.com/article/productivity-tips-for-success
-https://www.lifehack.org/articles/productivity/30-tips-to-boost-your-productivity.html
 https://www.bustle.com/p/productivity-tips-to-help-you-get-more-done-2022
 https://www.refinery29.com/en-us/productivity-tips
 https://www.verywellmind.com/productivity-tips-5114565
 https://www.verywellfit.com/productivity-tips-5114566
 https://www.healthline.com/health/productivity-tips
-# --- конец новых источников для продуктивности ---
 
 # ==========================
 # СТРАННЫЕ / НЕОЧЕВИДНЫЕ ФАКТЫ
 # ==========================
-[weird]
-https://www.parade.com/weird-facts
-https://www.boredpanda.com/category/funny/
-https://www.rd.com/list/interesting-facts/
+[weird_facts]
+https://www.boredpanda.com/category/funny
+https://www.boredpanda.com/weird-facts
+https://www.boredpanda.com/article/weird-facts-about-animals
+https://www.atlasobscura.com
 https://www.atlasobscura.com/places
+https://www.atlasobscura.com/places/weird-facts
 https://www.mentalfloss.com
 https://www.mentalfloss.com/article/508255/amazing-facts
-https://www.boredpanda.com/weird-facts/
-https://www.atlasobscura.com/
-https://www.buzzfeed.com/awesome
-https://www.factretriever.com/
-# --- 50 новых источников ---
-https://www.atlasobscura.com/places/weird-facts
-https://www.boredpanda.com/article/weird-facts-about-animals
-https://www.rd.com/list/interesting-facts-about-space/
 https://www.mentalfloss.com/article/508255/amazing-facts-about-space
-https://www.factretriever.com/weird-facts/
-https://www.buzzfeed.com/awesome/weird-facts
-https://www.parade.com/weird-facts-about-history
-https://www.livescience.com/weird-facts-about-the-human-body
-https://www.nationalgeographic.com/weird-facts/
-https://www.smithsonianmag.com/weird-facts/
-# --- конец новых источников для странных фактов ---
+https://www.factretriever.com
+https://www.factretriever.com/weird-facts
+
+# ==========================
+# ДАННЫЕ / СТАТИСТИКА
+# ==========================
+[data_statistics]
+https://ourworldindata.org
+https://data.worldbank.org
+https://data.un.org
+https://eurostat.ec.europa.eu
+https://fred.stlouisfed.org
+https://datasetsearch.research.google.com
+https://kaggle.com/datasets
+https://registry.opendata.aws
+https://datahub.io
+https://opendatasoft.com
+https://rosstat.gov.ru
+https://iq.hse.ru
+https://sberindex.ru
+
+# ==========================
+# НАУЧНЫЕ БАЗЫ / ПУБЛИКАЦИИ
+# ==========================
+[research_databases]
+https://arxiv.org
+https://core.ac.uk
+https://openalex.org
+https://zenodo.org
+https://figshare.com
+https://datadryad.org
+https://ssrn.com
+https://jstor.org
+https://semanticscholar.org
+https://researchgate.net
+https://cyberleninka.ru
+https://elibrary.ru
+https://mathnet.ru
+
+# ==========================
+# РУССКОЯЗЫЧНЫЕ НАУЧПОП
+# ==========================
+[ru_science]
+https://nplus1.ru
+https://postnauka.ru
+https://elementy.ru
+https://indicator.ru
+https://naked-science.ru
+
+# ==========================
+# КОНЕЦ СПИСКА
+# ==========================
+# Всего источников: 317
