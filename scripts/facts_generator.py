@@ -690,19 +690,47 @@ def strip_calls_to_action(text: str) -> str:
 # -------------------------
 # CONTENT QUALITY CHECKS
 # -------------------------
-def looks_too_vague(text: str) -> bool:
-    has_digit = bool(re.search(r"\d", text))
-    has_year = bool(re.search(r"19\d{2}|20\d{2}", text))
-    return not (has_digit or has_year)
 
-
+# ИЗМЕНЕНИЕ 1: Новая версия has_strong_fact — проверяет ВЕСЬ пост
 def has_strong_fact(text: str) -> bool:
-    years = re.findall(r"19\d{2}|20\d{2}", text)
-    digits = re.findall(r"\d", text)
-    return len(years) >= 1 and len(digits) >= 3
+    """
+    Проверяет весь пост на наличие:
+    - хотя бы одного года (19xx или 20xx)
+    - хотя бы одной цифры (не только год)
+    - хотя бы одного глагола результата
+    """
+    t = text.lower()
+
+    # Проверка на год
+    has_year = bool(re.search(r"\b(19\d{2}|20\d{2})\b", t))
+
+    # Любая цифра (включая проценты, количества и т.д.)
+    has_number = bool(re.search(r"\b\d+([.,]\d+)?\b", t))
+
+    # Глаголы результата исследования
+    has_result_verb = bool(re.search(
+        r"\b(показал[аи]?|выяснил[аи]?|обнаружил[аи]?|нашл[ие]"
+        r"|измерил[аи]?|увеличил[аи]?|снизил[аи]?|повысил[аи]?"
+        r"|зафиксировал[аи]?|доказал[аи]?|установил[аи]?"
+        r"|выявил[аи]?|подтвердил[аи]?|определил[аи]?)\b",
+        t
+    ))
+
+    if not (has_year and has_number and has_result_verb):
+        log.info(
+            f"Strong fact check: year={has_year}, "
+            f"number={has_number}, result_verb={has_result_verb}"
+        )
+
+    return has_year and has_number and has_result_verb
 
 
+# ОСТАВЛЕНО НА БУДУЩЕЕ (не используется в пайплайне)
 def has_strict_fact_block(text: str) -> bool:
+    """
+    [DEPRECATED] Строгая проверка первого блока.
+    Оставлена на случай, если понадобится в будущем.
+    """
     parts = text.strip().split("\n\n", 2)
     if len(parts) < 2:
         return False
@@ -716,11 +744,6 @@ def has_strict_fact_block(text: str) -> bool:
         first_block.lower()
     ))
 
-    if not (has_year and has_number and has_result_verb):
-        log.info(
-            f"Strict fact check failed: year={has_year}, "
-            f"number={has_number}, result_verb={has_result_verb}"
-        )
     return has_year and has_number and has_result_verb
 
 
@@ -919,17 +942,13 @@ def main() -> None:
                 log.info(f"Post too long ({len(post)} chars), smart clipping to 900")
                 post = smart_clip_post(post, limit=900, min_cut=400)
 
-            if looks_too_vague(post):
-                log.info("Post has no concrete data (numbers/years), skipping")
-                continue
-
+            # ИЗМЕНЕНИЕ 2: Единственная проверка конкретики — по всему посту
             if not has_strong_fact(post):
-                log.info("Post has no strong fact (year + numbers), skipping")
+                log.info("Post has no strong fact (year + number + result verb), skipping")
                 continue
 
-            if not has_strict_fact_block(post):
-                log.info("Post fails strict first-block fact check, skipping")
-                continue
+            # ИЗМЕНЕНИЕ 3: Убрана проверка has_strict_fact_block
+            # (была здесь, теперь удалена)
 
             if looks_like_announcement(post):
                 log.info("Post looks like shallow announcement, skipping")
