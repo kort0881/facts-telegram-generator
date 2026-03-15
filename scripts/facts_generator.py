@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Facts Generator ULTRA
-Improved Telegram fact post generator
+Improved Telegram fact post generator with enhanced anti-duplication
 """
 
 import os
@@ -13,6 +13,7 @@ import json
 import logging
 from typing import List, Set, Dict, Tuple
 from collections import Counter
+from urllib.parse import urlparse, urljoin
 
 import requests
 import yaml
@@ -26,23 +27,21 @@ LINKS_PATH = "links.txt"
 USED_LINKS_PATH = "used_links.txt"
 DEAD_LINKS_PATH = "dead_links.txt"
 POSTS_LOG_PATH = "used_posts.txt"
-TOPICS_LOG_PATH = "used_topics.txt"   # тематический трекер
+TOPICS_LOG_PATH = "used_topics.txt"
 
 # -------------------------
-# SETTINGS (можно переопределить в config.yaml)
+# SETTINGS
 # -------------------------
 MAX_ARTICLE_CHARS = 2500
 MAX_FETCH_ATTEMPTS = 50
 HTTP_TIMEOUT = 20
 TELEGRAM_LIMIT = 4096
 
-# анти‑дубликатор
-RECENT_SIMILARITY_THRESHOLD = 0.45
-BIGRAM_SIMILARITY_THRESHOLD = 0.30
+RECENT_SIMILARITY_THRESHOLD = 0.25
+BIGRAM_SIMILARITY_THRESHOLD = 0.15
 SIMILARITY_WINDOW = 50
 MAX_STORED_POSTS = 300
 
-# тематический трекер
 TOPIC_BLOCK_WINDOW = 10
 TOPIC_TOP_WORDS = 8
 
@@ -61,14 +60,12 @@ log = logging.getLogger("facts_bot")
 # CONFIG LOADING
 # -------------------------
 def load_config() -> Dict:
-    """Читает config.yaml и возвращает словарь с настройками."""
     if not os.path.exists(CONFIG_PATH):
         log.warning(f"Config file {CONFIG_PATH} not found, using defaults")
         return {}
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
-    # Позволяем переопределить любые глобальные константы через config
     cfg = {
         "ai_url": data.get("ai", {}).get("url", ""),
         "ai_model": data.get("ai", {}).get("model", ""),
@@ -76,18 +73,11 @@ def load_config() -> Dict:
         "tg_token": os.environ.get("TG_BOT_TOKEN", ""),
         "tg_chat": os.environ.get("TG_CHAT_ID", ""),
     }
-    # Обновляем глобальные параметры, если они заданы в config
     for key in [
-        "MAX_ARTICLE_CHARS",
-        "MAX_FETCH_ATTEMPTS",
-        "HTTP_TIMEOUT",
-        "TELEGRAM_LIMIT",
-        "RECENT_SIMILARITY_THRESHOLD",
-        "BIGRAM_SIMILARITY_THRESHOLD",
-        "SIMILARITY_WINDOW",
-        "MAX_STORED_POSTS",
-        "TOPIC_BLOCK_WINDOW",
-        "TOPIC_TOP_WORDS",
+        "MAX_ARTICLE_CHARS", "MAX_FETCH_ATTEMPTS", "HTTP_TIMEOUT",
+        "TELEGRAM_LIMIT", "RECENT_SIMILARITY_THRESHOLD",
+        "BIGRAM_SIMILARITY_THRESHOLD", "SIMILARITY_WINDOW",
+        "MAX_STORED_POSTS", "TOPIC_BLOCK_WINDOW", "TOPIC_TOP_WORDS",
     ]:
         if key in data:
             globals()[key] = data[key]
@@ -96,10 +86,9 @@ def load_config() -> Dict:
 
 
 # -------------------------
-# LINK LOADING (поддерживает обычные URL и markdown‑ссылки)
+# LINK LOADING
 # -------------------------
 def load_links() -> List[str]:
-    """Читает links.txt и возвращает список чистых URL."""
     links: List[str] = []
     url_pattern = re.compile(r'https?://[^\s)]+')
     with open(LINKS_PATH, "r", encoding="utf-8") as f:
@@ -107,11 +96,9 @@ def load_links() -> List[str]:
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
-            # Прямой URL
             if line.startswith("http"):
                 links.append(line)
                 continue
-            # Markdown‑ссылка вида [текст](url) или просто url в скобках
             match = url_pattern.search(line)
             if match:
                 links.append(match.group(0))
@@ -140,8 +127,8 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) rv:124.0 Gecko/20100101 Firefox/124.0",
 ]
 
-def http_get(url: str) -> requests.Response | None:
-    """Выполняет GET‑запрос с ротацией User‑Agent."""
+
+def http_get(url: str):
     headers = {"User-Agent": random.choice(USER_AGENTS)}
     try:
         r = requests.get(url, headers=headers, timeout=HTTP_TIMEOUT)
@@ -158,7 +145,6 @@ def http_get(url: str) -> requests.Response | None:
 # ARTICLE EXTRACTION
 # -------------------------
 def extract_article_links(url: str) -> List[str]:
-    """На странице‑категории собирает ссылки на статьи."""
     r = http_get(url)
     if not r:
         return []
@@ -167,29 +153,22 @@ def extract_article_links(url: str) -> List[str]:
     for a in soup.find_all("a", href=True):
         href = a["href"]
         if href.startswith("/"):
-            from urllib.parse import urljoin
             href = urljoin(url, href)
         if any(x in href for x in [
             "/article/", "/news/", "/story/", "/202", "/post",
         ]):
             links.append(href)
-    # Убираем дубликаты и ограничиваем количество
     return list(dict.fromkeys(links))[:20]
 
 
 def extract_text(html: str) -> str:
-    """Из HTML выводит чистый текст (параграфы)."""
     soup = BeautifulSoup(html, "html.parser")
     paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
     text = "\n".join(paragraphs)
     return text[:MAX_ARTICLE_CHARS]
 
 
-def fetch_article(url: str, used_urls: Set[str], dead_urls: Set[str]) -> Tuple[str | None, str | None]:
-    """
-    Возвращает (article_url, text).
-    Если url – категория, выбирает одну из свежих статей.
-    """
+def fetch_article(url: str, used_urls: Set[str], dead_urls: Set[str]) -> Tuple:
     is_category = any(x in url for x in [
         "history", "culture", "brain", "ideas", "topic",
         "category", "lifeandstyle", "subject", "essays",
@@ -217,7 +196,6 @@ def fetch_article(url: str, used_urls: Set[str], dead_urls: Set[str]) -> Tuple[s
             return article_url, text
         return None, None
 
-    # Обычная страница
     r = http_get(url)
     if not r:
         return None, None
@@ -234,24 +212,25 @@ def fetch_article(url: str, used_urls: Set[str], dead_urls: Set[str]) -> Tuple[s
 PROMPT = """
 Ты пишешь пост для Telegram‑канала «Что ты не знал».
 Ты — автор живого, креативного канала с фактами для аудитории 18–35 лет.
-Задача — рассказать ОДИН яркий факт коротко, конкретно и по‑человечески.
+Задача — рассказать ОДИН яркий факт коротко, конкретно и по‑человечески, максимально варьируя стиль.
 
 Формат поста (строго соблюдай структуру и пустые строки):
 
 1 строка — короткий цепляющий заголовок + 1–2 эмодзи.
-Обязательные правила:
-- Не начинай каждый заголовок с «Что ты не знал».
-- Используй разные шаблоны: «Факт дня: …», «Мозг вскипает от этого: …», «Неочевидная штука про …», «Вот что скрывается за …».
-- «Что ты не знал» допускается максимум в каждом третьем посте.
+Обязательно варьируй шаблоны заголовка, не используй один шаблон дважды подряд.
+Примеры: «Факт дня: …», «Мозг вскипает от этого: …», «Неочевидная штука про …»,
+«Вот что скрывается за …», «История молчит об этом: …», «В твоём мозге прямо сейчас: …».
+«Что ты не знал» — максимум в каждом пятом посте.
 
-1 блок (2–3 предложения) — один КОНКРЕТНЫЙ факт.
-Требование: в этом блоке ОБЯЗАТЕЛЬНО должен быть хотя бы ОДИН из элементов:
+1 блок (2–3 предложения) — один КОНКРЕТНЫЙ факт из текста.
+ЖЁСТКОЕ ТРЕБОВАНИЕ: в этом блоке ОБЯЗАТЕЛЬНО должен быть хотя бы ОДИН из элементов:
 - конкретное число или процент (например: «91% участников», «в 3 раза быстрее»);
 - год или диапазон дат (например: «в 1987 году», «с 2010 по 2020»);
-- имя конкретного человека или название места/проекта;
-- краткое описание эксперимента: что сделали и что получилось.
-Блок должен ощущаться как мини‑история (кто, где, что нашли/сделали).
-Запрещены пустые формулировки без опоры на конкретный факт.
+- имя конкретного человека или название места/проекта/эксперимента;
+- краткое описание эксперимента: кто, что сделал и что получилось.
+Блок должен ощущаться как мини‑история или сцена.
+ЗАПРЕЩЕНО: описывать сайты, издания, журналы, медиа — только факты о реальном мире.
+ЗАПРЕЩЕНО: «журнал публикует», «сайт освещает», «издание рассказывает».
 Можно добавить 1 уместный эмодзи в конце одного из предложений.
 
 пустая строка
@@ -260,35 +239,35 @@ PROMPT = """
 - почему факт важен, как меняет понимание темы;
 - можно сравнить «как мы обычно думаем» и «что показывает пример»;
 - разговорный тон, как объяснение другу;
-- можно добавить короткую живую фразу («звучит странно, но так и есть», «раньше об этом вообще не думали»).
+- можно добавить живую фразу («звучит странно, но так и есть», «раньше об этом вообще не думали»).
 
 пустая строка
 
 3 блок (1–2 предложения) — практический вывод:
-- не реклама и не призыв «подписаться»/«следить за новостями»;
+- не реклама, не призыв «подписаться», «перейти на сайт», «посмотреть статьи»;
 - личное, прикладное действие для читателя;
-- никаких общих абстракций, только то, что читатель может реально применить;
-- можно добавить 1 эмодзи в конце предложения, если уместно.
+- только то, что читатель может реально применить сегодня;
+- можно добавить 1 эмодзи, если уместно.
 
 пустая строка
 
 Финал — вопрос читателю:
-- вопрос должен цеплять личный опыт или позицию («было ли у тебя так?», «смог бы ты так поступить?», «готов ли ты проверить это на себе?»);
-- избегай общих вопросов вроде «что вы думаете по этому поводу?»;
-- меняй конструкции, не начинай каждый вопрос одинаково.
+- цепляй личный опыт («было ли у тебя так?», «смог бы ты так поступить?»);
+- избегай «что вы думаете по этому поводу?»;
+- варьируй конструкции, не начинай каждый вопрос одинаково.
 
 Последняя строка — 3–4 хэштега на русском:
-- сначала тема (#психология, #история, #наука, #политика, #здоровье, #привычки и т.п.), потом уточнения;
-- не дублируй одно и то же слово в разных формах;
+- сначала тема (#психология, #история, #наука, #здоровье, #привычки и т.п.);
+- не дублируй одно слово в разных формах;
 - не используй в хэштегах имя канала.
 
 Стиль и длина:
-- Пиши коротко, живо, разговорным русским, без канцелярита и школьных формулировок.
+- Коротко, живо, разговорным русским, без канцелярита.
 - ОДИН главный факт и ОДНА понятная мысль вокруг него.
-- Цель по длине — 700–900 символов (но не более 900).
-- Чередуй короткие и чуть более длинные предложения.
-- Максимум 1–2 выделения **жирным** для самых важных слов.
-- Не копируй формулировки из примеров, придумывай свои.
+- Цель — 700–900 символов (не более 900).
+- Чередуй короткие и длинные предложения.
+- Максимум 1–2 выделения **жирным**.
+- Не копируй формулировки из примеров.
 
 Запрещённые формулировки — НИКОГДА не использовать:
 - «проливает новый свет», «мы можем глубже понять эпоху», «это открывает дискуссию»
@@ -299,14 +278,14 @@ PROMPT = """
 - «загугли», «узнай больше в интернете», «копнуть глубже», «если хочешь узнать больше»
 - «начни интересоваться новостями», «следи за новостями», «будь в курсе последних открытий»
 - «подписывайся», «поделись с друзьями», «расскажи друзьям»
-Если хочешь сказать то же самое — перефразируй простыми, живыми словами.
-Не превращай текст в сухую новость или объявление.
+- «прямо сейчас посмотреть», «самые популярные статьи», «независимый журнал»
+- «публикует исследования», «освещает последние открытия», «делает науку доступной»
 
 Разнообразие:
-- Не делай два поста подряд на одну тему с тем же углом.
-- Не начинай каждый пост одинаково. Меняй заходы: «Представь ситуацию…», «Обычно мы думаем, что…», «Есть одна странная деталь…».
+- Не делай два поста подряд на одну тему.
+- Меняй заходы: «Представь ситуацию…», «Обычно мы думаем, что…», «Есть одна странная деталь…».
 
-Если в исходном тексте НЕТ яркой цифры, года, имени или конкретного кейса — верни короткий ответ «SKIP», а не размытый пост.
+Если в тексте НЕТ яркой цифры, года, имени или конкретного кейса — верни «SKIP».
 
 Допустимая длина поста — максимум 900 символов, цель 700–900.
 
@@ -318,6 +297,7 @@ PROMPT = """
 # BANNED PHRASES
 # -------------------------
 BANNED_PHRASES = [
+    # классика
     "проливает новый свет",
     "мы можем глубже понять эпоху",
     "это открывает дискуссию",
@@ -351,10 +331,30 @@ BANNED_PHRASES = [
     "подписывайся на",
     "поделись с друзьями",
     "расскажи друзьям",
+    # реклама сайтов/изданий
+    "публикует исследования",
+    "освещает последние открытия",
+    "на его страницах публикуются",
+    "подводят итоги самых популярных",
+    "независимый журнал",
+    "прямо сейчас посмотреть",
+    "прямо сейчас узнать",
+    "самые популярные статьи месяца",
+    "делает науку доступной",
+    "делает ее доступной",
+    "любой может прочитать",
+    "любой желающий может",
+    "каждый месяц они публикуют",
+    "каждый месяц подводят",
+    "из лабораторий, университетов",
+    "из лабораторий и университетов",
+    "независимое издание",
+    "открытый доступ",
+    "бесплатный доступ к статьям",
 ]
 
 # -------------------------
-# STOP‑WORDS ДЛЯ ТЕМАТИЧЕСКОГО ТРЕКЕРА
+# STOP‑WORDS
 # -------------------------
 STOP_WORDS = {
     "что", "это", "как", "для", "или", "при", "так", "все", "они",
@@ -433,8 +433,7 @@ def load_posts(path: str = POSTS_LOG_PATH) -> List[str]:
 
 def save_post(text: str, path: str = POSTS_LOG_PATH) -> None:
     posts = load_posts(path)
-    # Сохраняем с экранированными переносами для удобного чтения
-    posts.append(text.replace("\n", " \\\\n "))
+    posts.append(text.replace("\n", " \\n "))
     if len(posts) > MAX_STORED_POSTS:
         posts = posts[-MAX_STORED_POSTS:]
     with open(path, "w", encoding="utf-8") as f:
@@ -484,10 +483,7 @@ def is_topic_repeated(new_post: str, recent_topics: List[List[str]]) -> bool:
         overlap = len(new_words & old_set)
         ratio = overlap / min(len(new_words), len(old_set))
         if ratio >= 0.5:
-            log.info(
-                f"Topic overlap {ratio:.2f} with recent post "
-                f"(shared: {new_words & old_set})"
-            )
+            log.info(f"Topic overlap {ratio:.2f} (shared: {new_words & old_set})")
             return True
     return False
 
@@ -520,7 +516,62 @@ def contains_banned_phrases(text: str) -> bool:
     lower = text.lower()
     for phrase in BANNED_PHRASES:
         if phrase in lower:
+            log.info(f"Banned phrase found: «{phrase}»")
             return True
+    return False
+
+
+# -------------------------
+# PROMO / WEBSITE-AD DETECTION
+# -------------------------
+_PROMO_PATTERNS = re.compile(
+    r"("
+    r"публику(ет|ются|ют)\s+(исследования|статьи|материалы|открытия)"
+    r"|освещает\s+(последние|новые|актуальные)"
+    r"|независим(ый|ое)\s+(журнал|издание|ресурс|сайт)"
+    r"|на\s+(его|её|их)\s+страницах"
+    r"|подводят\s+итоги"
+    r"|самые\s+популярные\s+статьи"
+    r"|прямо\s+сейчас\s+(посмотреть|узнать|перейти|открыть)"
+    r"|делает\s+(науку|её|ее)\s+доступной"
+    r"|любой\s+может\s+(прочитать|узнать|найти)"
+    r"|из\s+лабораторий.{0,20}университет"
+    r"|каждый\s+месяц\s+(они|редакция|журнал)"
+    r"|открытый\s+доступ\s+к"
+    r"|бесплатн\w+\s+доступ"
+    r")",
+    re.IGNORECASE,
+)
+
+_PROMO_TITLE_PATTERNS = re.compile(
+    r"("
+    r"\d{1,2}\s+лет\s+\w+\s+(публику|освещ|пишет|рассказыва)"
+    r"|с\s+\d{4}\s+года\s+\w+\s+(публику|освещ|пишет)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_promo_for_website(text: str) -> bool:
+    if _PROMO_PATTERNS.search(text):
+        log.info("Post looks like website promo — skipping")
+        return True
+
+    first_line = text.strip().split("\n", 1)[0]
+    if _PROMO_TITLE_PATTERNS.search(first_line):
+        log.info("Post title looks like website promo — skipping")
+        return True
+
+    first_block_end = text.find("\n\n")
+    first_block = text[:first_block_end] if first_block_end != -1 else text
+    media_words = re.findall(
+        r"\b(журнал|издание|сайт|ресурс|портал|платформа|медиа)\b",
+        first_block.lower()
+    )
+    if len(media_words) >= 2:
+        log.info(f"First block mentions media entity {len(media_words)}x — likely promo")
+        return True
+
     return False
 
 
@@ -534,9 +585,17 @@ _GOOGLE_HINT_PATTERNS = re.compile(
 )
 
 _BAD_CTA_PATTERNS = re.compile(
-    r"(начни интересоваться новостями|обращай внимание на открытия последних лет"
-    r"|следи за новостями|будь в курсе последних открытий"
-    r"|подписывайся|поделись с друзьями|расскажи друзьям)",
+    r"("
+    r"начни интересоваться новостями"
+    r"|обращай внимание на открытия последних лет"
+    r"|следи за новостями"
+    r"|будь в курсе последних открытий"
+    r"|подписывайся"
+    r"|поделись с друзьями"
+    r"|расскажи друзьям"
+    r"|прямо сейчас (посмотреть|узнать|перейти|открыть)"
+    r"|самые популярные статьи месяца"
+    r")",
     re.IGNORECASE,
 )
 
@@ -559,6 +618,7 @@ def strip_calls_to_action(text: str) -> str:
     cleaned = []
     for line in lines:
         if _BAD_CTA_PATTERNS.search(line):
+            log.info(f"Stripped CTA line: {line[:60]}")
             continue
         cleaned.append(line.rstrip())
     return "\n".join(cleaned).strip()
@@ -646,12 +706,23 @@ def pick_sources(all_links: List[str]) -> Tuple[List[str], Set[str], Set[str]]:
 
 
 # -------------------------
+# HELPERS
+# -------------------------
+def mark_used(url: str, article_url: str, used_urls: Set[str]) -> None:
+    save_line(USED_LINKS_PATH, url)
+    used_urls.add(url)
+    if article_url != url:
+        save_line(USED_LINKS_PATH, article_url)
+        used_urls.add(article_url)
+
+
+# -------------------------
 # MAIN
 # -------------------------
 def main() -> None:
     log.info("Starting generator")
     cfg = load_config()
-    # Проверяем наличие обязательных параметров
+
     missing = [k for k in ("ai_url", "ai_model", "ai_key", "tg_token", "tg_chat") if not cfg.get(k)]
     if missing:
         log.error(f"Missing config values: {', '.join(missing)}")
@@ -669,8 +740,15 @@ def main() -> None:
 
     old_posts = load_posts()
     recent_topics = load_recent_topics()
+    recent_domains: List[str] = []
+    MAX_RECENT_DOMAINS = 5
 
     for url in candidates:
+        domain = urlparse(url).netloc
+        if domain in recent_domains:
+            log.info(f"Skipping {url} — domain {domain} used recently")
+            continue
+
         log.info(f"Trying source: {url}")
         article_url, text = fetch_article(url, used_urls, dead_urls)
 
@@ -693,56 +771,73 @@ def main() -> None:
             log.info(f"Generating post from: {article_url}")
             post = call_ai(cfg, text)
 
+            # Пост-обработка
             post = strip_google_hint(post)
             post = strip_calls_to_action(post)
             post = normalize_blank_lines(post)
 
-            if len(post) < 500:
-                log.info(f"Generated post too short ({len(post)} chars), skipping")
+            # Проверка: ИИ вернул SKIP
+            if post.strip().upper().startswith("SKIP"):
+                log.info("AI returned SKIP — no good fact found in article")
+                mark_used(url, article_url, used_urls)
                 continue
 
+            # Минимальная длина
+            if len(post) < 500:
+                log.info(f"Post too short ({len(post)} chars), skipping")
+                continue
+
+            # Конкретность
             if looks_too_vague(post):
-                log.info("Post has no concrete data (numbers/years), skipping as vague")
+                log.info("Post has no concrete data (numbers/years), skipping")
                 continue
 
             if not has_strong_fact(post):
-                log.info("Post has no strong fact (years+numbers), skipping")
+                log.info("Post has no strong fact (year + numbers), skipping")
                 continue
 
+            # Похоже на объявление
             if looks_like_announcement(post):
                 log.info("Post looks like shallow announcement, skipping")
                 continue
 
+            # Запрещённые фразы
             if contains_banned_phrases(post):
                 log.info("Post contains banned phrases, skipping")
                 continue
 
-            if is_too_similar_to_previous(post, old_posts):
-                log.info("Generated post is too similar to previous ones, skipping")
-                save_line(USED_LINKS_PATH, url)
-                used_urls.add(url)
-                if article_url != url:
-                    save_line(USED_LINKS_PATH, article_url)
-                    used_urls.add(article_url)
+            # Реклама сайта/издания
+            if is_promo_for_website(post):
+                log.info("Post is promo for a website/publication, skipping")
+                mark_used(url, article_url, used_urls)
                 continue
 
+            # Дубликат по тексту
+            if old_posts:
+                max_sim = max(
+                    combined_similarity(post, old)
+                    for old in old_posts[-SIMILARITY_WINDOW:] if old
+                )
+                log.info(f"Max combined similarity to recent posts: {max_sim:.3f}")
+
+            if is_too_similar_to_previous(post, old_posts):
+                log.info("Post is too similar to previous ones, skipping")
+                mark_used(url, article_url, used_urls)
+                continue
+
+            # Дубликат по теме
             if is_topic_repeated(post, recent_topics):
                 log.info("Topic already covered recently, skipping")
-                save_line(USED_LINKS_PATH, url)
-                used_urls.add(url)
-                if article_url != url:
-                    save_line(USED_LINKS_PATH, article_url)
-                    used_urls.add(article_url)
+                mark_used(url, article_url, used_urls)
                 continue
 
+            # Отправка
             send_telegram(cfg, post, article_url)
+            mark_used(url, article_url, used_urls)
 
-            save_line(USED_LINKS_PATH, url)
-            used_urls.add(url)
-
-            if article_url != url:
-                save_line(USED_LINKS_PATH, article_url)
-                used_urls.add(article_url)
+            recent_domains.append(domain)
+            if len(recent_domains) > MAX_RECENT_DOMAINS:
+                recent_domains.pop(0)
 
             log.info("Post sent successfully")
             return
