@@ -171,7 +171,24 @@ def extract_text(html: str) -> str:
     return text[:MAX_ARTICLE_CHARS]
 
 
+# -------------------------
+# ROOT PAGE DETECTION
+# -------------------------
+def is_root_page(url: str) -> bool:
+    """Returns True if the URL points to a root/homepage (no meaningful path)."""
+    p = urlparse(url)
+    return p.path in ("", "/") and not p.query and not p.fragment
+
+
+# -------------------------
+# ARTICLE FETCHER
+# -------------------------
 def fetch_article(url: str, used_urls: Set[str], dead_urls: Set[str]) -> Tuple:
+    # 1. Root pages are not articles — skip immediately
+    if is_root_page(url):
+        log.info(f"Root page detected, skipping as non-article: {url}")
+        return None, None
+
     is_category = any(x in url for x in [
         "history", "culture", "brain", "ideas", "topic",
         "category", "lifeandstyle", "subject", "essays",
@@ -229,14 +246,15 @@ PROMPT = """
 ЗАПРЕЩЕНО начинать заголовок с: «Мозг вскипает», «Что ты не знал», «Мозг взрывается».
 
 1 блок (2–3 предложения) — один КОНКРЕТНЫЙ факт из текста.
-ЖЁСТКОЕ ТРЕБОВАНИЕ: в этом блоке ОБЯЗАТЕЛЬНО должен быть хотя бы ОДИН из элементов:
-- конкретное число или процент (например: «91% участников», «в 3 раза быстрее»);
-- год или диапазон дат (например: «в 1987 году», «с 2010 по 2020»);
-- имя конкретного человека или название места/проекта/эксперимента;
-- краткое описание эксперимента: кто, что сделал и что получилось.
+ЖЁСТКОЕ ТРЕБОВАНИЕ — блок ДОЛЖЕН содержать ВСЁ нижеперечисленное:
+- год или диапазон лет (например: «в 1987 году», «с 2010 по 2020»);
+- хотя бы одно конкретное число или процент (например: «91% участников», «в 3 раза быстрее»);
+- кто и что сделал (исследователи, учёные, конкретный человек, название эксперимента/проекта);
+- результат с глаголом: показали, обнаружили, измерили, выяснили, зафиксировали, увеличили, снизили.
 Блок должен ощущаться как мини‑история или сцена.
-ЗАПРЕЩЕНО: описывать сайты, издания, журналы, медиа — только факты о реальном мире.
-ЗАПРЕЩЕНО: «журнал публикует», «сайт освещает», «издание рассказывает».
+ЗАПРЕЩЕНО: описывать сайты, журналы, музеи, экспозиции, издания — только факты о реальном мире.
+ЗАПРЕЩЕНО: «журнал публикует», «сайт освещает», «издание рассказывает», «музей показывает».
+Если исходный текст ТОЛЬКО про сайт/музей/выставку — верни «SKIP».
 Можно добавить 1 уместный эмодзи в конце одного из предложений.
 
 пустая строка
@@ -251,8 +269,10 @@ PROMPT = """
 
 3 блок (1–2 предложения) — практический вывод:
 - не реклама, не призыв «подписаться», «перейти на сайт», «посмотреть статьи»;
+- ЗАПРЕЩЕНО: «теперь ты можешь», «теперь любой может», «был ли у тебя опыт»;
 - личное, прикладное действие для читателя;
 - только то, что читатель может реально применить сегодня;
+- если факт короткий — пиши короткий вывод, не растягивай водой;
 - можно добавить 1 эмодзи, если уместно.
 
 пустая строка
@@ -287,12 +307,14 @@ PROMPT = """
 - «прямо сейчас посмотреть», «самые популярные статьи», «независимый журнал»
 - «публикует исследования», «освещает последние открытия», «делает науку доступной»
 - «Мозг вскипает», «Мозг взрывается», «Что ты не знал» (в заголовке)
+- «теперь ты можешь», «теперь любой может», «был ли у тебя опыт»
 
 Разнообразие:
 - Не делай два поста подряд на одну тему.
 - Меняй заходы: «Представь ситуацию…», «Обычно мы думаем, что…», «Есть одна странная деталь…».
 
 Если в тексте НЕТ яркой цифры, года, имени или конкретного кейса — верни «SKIP».
+Если текст только про сайт, музей или выставку — верни «SKIP».
 
 Допустимая длина поста — максимум 900 символов, цель 700–900.
 
@@ -358,6 +380,10 @@ BANNED_PHRASES = [
     "независимое издание",
     "открытый доступ",
     "бесплатный доступ к статьям",
+    # soft CTA / «опыт»
+    "теперь ты можешь",
+    "теперь любой может",
+    "был ли у тебя опыт",
 ]
 
 # -------------------------
@@ -605,7 +631,7 @@ def is_promo_for_website(text: str) -> bool:
 
 
 # -------------------------
-# POST CLEANUP & CONCRETENESS CHECK
+# POST CLEANUP
 # -------------------------
 _GOOGLE_HINT_PATTERNS = re.compile(
     r"(если хочешь (копнуть глубже|узнать больше)|загугли|узнай больше в интернете"
@@ -624,6 +650,9 @@ _BAD_CTA_PATTERNS = re.compile(
     r"|расскажи друзьям"
     r"|прямо сейчас (посмотреть|узнать|перейти|открыть)"
     r"|самые популярные статьи месяца"
+    r"|теперь ты можешь"
+    r"|теперь любой может"
+    r"|был ли у тебя опыт"
     r")",
     re.IGNORECASE,
 )
@@ -653,6 +682,9 @@ def strip_calls_to_action(text: str) -> str:
     return "\n".join(cleaned).strip()
 
 
+# -------------------------
+# CONTENT QUALITY CHECKS
+# -------------------------
 def looks_too_vague(text: str) -> bool:
     has_digit = bool(re.search(r"\d", text))
     has_year = bool(re.search(r"19\d{2}|20\d{2}", text))
@@ -663,6 +695,42 @@ def has_strong_fact(text: str) -> bool:
     years = re.findall(r"19\d{2}|20\d{2}", text)
     digits = re.findall(r"\d", text)
     return len(years) >= 1 and len(digits) >= 3
+
+
+def has_strict_fact_block(text: str) -> bool:
+    """
+    The first content block (after the headline) must contain:
+    - a year
+    - a number/digit
+    - a result verb (showed, found, measured, etc.)
+    """
+    parts = text.strip().split("\n\n", 2)
+    if len(parts) < 2:
+        return False
+    first_block = parts[1]  # parts[0] = headline, parts[1] = first block
+
+    has_year = bool(re.search(r"19\d{2}|20\d{2}", first_block))
+    has_number = bool(re.search(r"\d", first_block))
+    has_result_verb = bool(re.search(
+        r"\b(показал[аи]?|выяснил[аи]?|обнаружил[аи]?|нашл[ие]|измерил[аи]?"
+        r"|увеличил[аи]?|снизил[аи]?|повысил[аи]?|зафиксировал[аи]?|доказал[аи]?)\b",
+        first_block.lower()
+    ))
+
+    if not (has_year and has_number and has_result_verb):
+        log.info(
+            f"Strict fact check failed: year={has_year}, "
+            f"number={has_number}, result_verb={has_result_verb}"
+        )
+    return has_year and has_number and has_result_verb
+
+
+def has_forbidden_soft_cta(text: str) -> bool:
+    """Hard-skip posts with soft CTA / experience phrases that slipped through cleanup."""
+    return bool(re.search(
+        r"(теперь ты можешь|теперь любой может|был ли у тебя опыт)",
+        text.lower()
+    ))
 
 
 def looks_like_announcement(text: str) -> bool:
@@ -802,19 +870,27 @@ def main() -> None:
             log.info(f"Generating post from: {article_url}")
             post = call_ai(cfg, text)
 
+            # --- Cleanup passes ---
             post = strip_google_hint(post)
             post = strip_calls_to_action(post)
             post = normalize_blank_lines(post)
 
+            # --- Hard skip from AI ---
             if post.strip().upper().startswith("SKIP"):
                 log.info("AI returned SKIP — no good fact found in article")
                 mark_used(url, article_url, used_urls)
                 continue
 
-            if len(post) < 500:
+            # --- Length checks ---
+            if len(post) < 350:
                 log.info(f"Post too short ({len(post)} chars), skipping")
                 continue
 
+            if len(post) > 950:
+                log.info(f"Post too long ({len(post)} chars), clipping to 900")
+                post = post[:900]
+
+            # --- Content quality ---
             if looks_too_vague(post):
                 log.info("Post has no concrete data (numbers/years), skipping")
                 continue
@@ -823,10 +899,15 @@ def main() -> None:
                 log.info("Post has no strong fact (year + numbers), skipping")
                 continue
 
+            if not has_strict_fact_block(post):
+                log.info("Post fails strict first-block fact check, skipping")
+                continue
+
             if looks_like_announcement(post):
                 log.info("Post looks like shallow announcement, skipping")
                 continue
 
+            # --- Title / phrase bans ---
             if has_banned_title(post):
                 log.info("Post has banned title template, skipping")
                 continue
@@ -835,11 +916,17 @@ def main() -> None:
                 log.info("Post contains banned phrases, skipping")
                 continue
 
+            if has_forbidden_soft_cta(post):
+                log.info("Post contains forbidden soft CTA/experience phrase, skipping")
+                continue
+
+            # --- Website/promo detection ---
             if is_promo_for_website(post):
                 log.info("Post is promo for a website/publication, skipping")
                 mark_used(url, article_url, used_urls)
                 continue
 
+            # --- Deduplication ---
             if old_posts:
                 max_sim = max(
                     combined_similarity(post, old)
@@ -857,6 +944,7 @@ def main() -> None:
                 mark_used(url, article_url, used_urls)
                 continue
 
+            # --- Send ---
             send_telegram(cfg, post, article_url)
             mark_used(url, article_url, used_urls)
 
@@ -876,4 +964,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
