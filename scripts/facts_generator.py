@@ -31,6 +31,7 @@ DEAD_LINKS_PATH = "dead_links.txt"
 POSTS_LOG_PATH = "used_posts.txt"
 TOPICS_LOG_PATH = "used_topics.txt"
 LOG_FILE_PATH = "facts_generator.log"
+RECENT_DOMAINS_PATH = "recent_domains.txt"  # NEW
 
 # -------------------------
 # SETTINGS
@@ -47,6 +48,8 @@ MAX_STORED_POSTS = 300
 
 TOPIC_BLOCK_WINDOW = 10
 TOPIC_TOP_WORDS = 8
+
+MAX_RECENT_DOMAINS = 10  # сколько доменов считаем «свежими»
 
 # DRY-RUN: True = показывать пост в консоли, НЕ отправлять в Telegram
 DRY_RUN = False
@@ -975,6 +978,20 @@ def mark_used(url: str, article_url: str, used_urls: Set[str]) -> None:
         used_urls.add(article_url)
 
 
+def load_recent_domains(path: str = RECENT_DOMAINS_PATH) -> List[str]:
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        return [line.strip() for line in f if line.strip()]
+
+
+def save_recent_domains(domains: List[str], path: str = RECENT_DOMAINS_PATH) -> None:
+    last = domains[-MAX_RECENT_DOMAINS:]
+    with open(path, "w", encoding="utf-8") as f:
+        for d in last:
+            f.write(d + "\n")
+
+
 # -------------------------
 # MAIN
 # -------------------------
@@ -1001,13 +1018,13 @@ def main() -> None:
 
     old_posts = load_posts()
     recent_topics = load_recent_topics()
-    recent_domains: List[str] = []
-    MAX_RECENT_DOMAINS = 5
+    recent_domains: List[str] = load_recent_domains()
 
     for url in candidates:
         domain = urlparse(url).netloc
+
         if domain in recent_domains:
-            log.info(f"Skipping {url} — domain {domain} used recently")
+            log.info(f"Skipping {url} — domain {domain} used recently (persistent)")
             continue
 
         log.info(f"Trying source: {url}")
@@ -1102,8 +1119,7 @@ def main() -> None:
             mark_used(url, article_url, used_urls)
 
             recent_domains.append(domain)
-            if len(recent_domains) > MAX_RECENT_DOMAINS:
-                recent_domains.pop(0)
+            save_recent_domains(recent_domains)
 
             log.info("Post processed successfully")
             break  # один пост за запуск
@@ -1117,3 +1133,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
