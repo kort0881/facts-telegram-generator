@@ -1,416 +1,309 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
-Facts Generator ULTRA
-Improved Telegram fact post generator with enhanced anti-duplication
-+ Groq rate limiting & safe retries
+Facts Autopost (KIBER-style)
+
+Берёт статьи из facts_links_clean.txt, выжимает один яркий научный/исторический факт
+и постит в Telegram. Использует Groq с бюджетом и state-памятью по аналогии с No-code-protection.
 """
 
 import os
+import json
+import asyncio
 import random
 import re
-import sys
-import json
-import logging
 import time
-from typing import List, Set, Dict, Tuple
-from collections import Counter
+import logging
+from dataclasses import dataclass
+from typing import Optional, List, Set, Tuple
 from urllib.parse import urlparse, urljoin
+from collections import Counter
 
-import requests
-import yaml
+import aiohttp
 from bs4 import BeautifulSoup
 
-# -------------------------
-# CONFIG FILES
-# -------------------------
-CONFIG_PATH = "config.yaml"
-LINKS_PATH = "links.txt"
-USED_LINKS_PATH = "used_links.txt"
-DEAD_LINKS_PATH = "dead_links.txt"
-POSTS_LOG_PATH = "used_posts.txt"
-TOPICS_LOG_PATH = "used_topics.txt"
-LOG_FILE_PATH = "facts_generator.log"
-RECENT_DOMAINS_PATH = "recent_domains.txt"  # NEW
+# ИСПРАВЛЕНИЕ #1: используем AsyncGroq вместо Groq (синхронный клиент нельзя await-ить)
+from groq import AsyncGroq
 
-# -------------------------
-# SETTINGS
-# -------------------------
-MAX_ARTICLE_CHARS = 2500
-MAX_FETCH_ATTEMPTS = 50
-HTTP_TIMEOUT = 20
-TELEGRAM_LIMIT = 4096
+# ============ ЛОГИРОВАНИЕ ============
 
-RECENT_SIMILARITY_THRESHOLD = 0.25
-BIGRAM_SIMILARITY_THRESHOLD = 0.15
-SIMILARITY_WINDOW = 50
-MAX_STORED_POSTS = 300
-
-TOPIC_BLOCK_WINDOW = 10
-TOPIC_TOP_WORDS = 8
-
-MAX_RECENT_DOMAINS = 10  # сколько доменов считаем «свежими»
-
-# DRY-RUN: True = показывать пост в консоли, НЕ отправлять в Telegram
-DRY_RUN = False
-
-# Фиксированная шапка канала
-CHANNEL_HEADER = "Что ты не знал"
-
-# -------------------------
-# GROQ RATE LIMIT / BUDGET
-# -------------------------
-GROQ_STATE_FILE = "groq_state.json"
-MAX_AI_CALLS_PER_RUN = 5        # максимум вызовов LLM за запуск
-AI_RETRY_ATTEMPTS = 2           # ретраи при ошибке Groq
-AI_RETRY_BASE_DELAY = 5         # базовая пауза между ретраями (сек)
-MAX_RETRY_AFTER = 60            # максимум уважения Retry-After (сек)
-MIN_DELAY_BETWEEN_CALLS = 2.0   # минимальная пауза между запросами к Groq (сек)
-RPM_LIMIT = 20                  # грубый лимит запросов в минуту
-
-# -------------------------
-# LOGGING
-# -------------------------
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(LOG_FILE_PATH, encoding="utf-8"),
-    ],
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%H:%M:%S",
 )
-log = logging.getLogger("facts_bot")
+logger = logging.getLogger("FactsBot")
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
+# ============ ENV ============
 
-class GroqLimiter:
-    def __init__(self, path: str = GROQ_STATE_FILE):
-        self.path = path
-        self.data = {
-            "last_call_time": 0.0,
-            "minute_start": 0.0,
-            "request_count": 0,
+def get_env(name: str) -> str:
+    val = os.getenv(name)
+    if not val:
+        logger.error(f"Missing env: {name}")
+        raise SystemExit(1)
+    return val
+
+GROQ_API_KEY       = get_env("GROQ_API_KEY")
+TELEGRAM_BOT_TOKEN = get_env("TELEGRAM_BOT_TOKEN")
+CHANNEL_ID         = get_env("CHANNEL_ID")
+
+CACHE_DIR = os.getenv("CACHE_DIR", "cache_facts")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+STATE_FILE       = os.path.join(CACHE_DIR, "facts_state.json")
+GROQ_BUDGET_FILE = os.path.join(CACHE_DIR, "facts_groq_budget.json")
+
+FACTS_LINKS_FILE = "facts_links_clean.txt"
+
+HTTP_TIMEOUT            = aiohttp.ClientTimeout(total=25)
+TEXT_ONLY_THRESHOLD     = 700
+MAX_POSTS_PER_RUN       = 1
+MAX_ATTEMPTS            = 15
+
+RECENT_POSTS_CHECK          = 10
+RECENT_SIMILARITY_THRESHOLD = 0.40
+MIN_TOPIC_DIVERSITY         = 3
+
+MAX_ARTICLE_CHARS = 2500
+MIN_ARTICLE_CHARS = 300
+
+MAX_POST_LEN = 900
+MIN_POST_LEN = 350
+
+# ============ МОДЕЛИ / БЮДЖЕТ ============
+
+@dataclass
+class ModelConfig:
+    name: str
+    rpm: int
+    tpm: int
+    daily_tokens: int
+    priority: int
+
+MODELS = {
+    "heavy": ModelConfig("llama-3.3-70b-versatile", rpm=30, tpm=6000,  daily_tokens=100000, priority=1),
+    "light": ModelConfig("llama-3.1-8b-instant",    rpm=30, tpm=20000, daily_tokens=500000, priority=2),
+}
+
+class GroqBudget:
+    def __init__(self, path: str):
+        self.state_file = path
+        self.data = self._load()
+
+    def _load(self) -> dict:
+        default = {
+            "daily_tokens":      {},
+            "last_reset":        time.strftime("%Y-%m-%d"),
+            "last_request_time": {},
+            "request_count":     {},
+            "minute_start":      {},
         }
-        self._load()
-
-    def _load(self):
-        if not os.path.exists(self.path):
-            return
-        try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-                self.data.update(saved)
-        except Exception:
-            pass
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                    if saved.get("last_reset") != time.strftime("%Y-%m-%d"):
+                        logger.info("🔄 New day — reset Groq limits")
+                        saved["daily_tokens"] = {}
+                        saved["last_reset"]   = time.strftime("%Y-%m-%d")
+                    default.update(saved)
+            except Exception:
+                pass
+        return default
 
     def save(self):
         try:
-            with open(self.path, "w", encoding="utf-8") as f:
+            with open(self.state_file, "w", encoding="utf-8") as f:
                 json.dump(self.data, f)
         except Exception:
             pass
 
-    def wait_before_call(self):
-        now = time.time()
-
-        # Обновляем минутное окно
-        if now - self.data["minute_start"] > 60:
-            self.data["minute_start"] = now
-            self.data["request_count"] = 0
-
-        # Если выбили RPM — ждём до конца минуты
-        if self.data["request_count"] >= RPM_LIMIT:
-            wait = 60 - (now - self.data["minute_start"]) + 1
-            if wait > 0:
-                log.info(f"GroqLimiter: RPM limit hit, sleeping {wait:.1f}s")
-                time.sleep(wait)
-            self.data["minute_start"] = time.time()
-            self.data["request_count"] = 0
-
-        # Минимальная пауза между вызовами
-        last = self.data["last_call_time"]
-        delta = now - last
-        if delta < MIN_DELAY_BETWEEN_CALLS:
-            wait = MIN_DELAY_BETWEEN_CALLS - delta
-            if wait > 0:
-                log.info(f"GroqLimiter: spacing calls, sleeping {wait:.2f}s")
-                time.sleep(wait)
-
-        # Обновляем счётчики
-        self.data["last_call_time"] = time.time()
-        self.data["request_count"] += 1
+    def add_tokens(self, model: str, tokens: int):
+        self.data["daily_tokens"][model] = self.data["daily_tokens"].get(model, 0) + tokens
         self.save()
 
+    def can_use_model(self, model_key: str) -> bool:
+        if model_key not in MODELS:
+            return False
+        cfg  = MODELS[model_key]
+        used = self.data["daily_tokens"].get(cfg.name, 0)
+        return (cfg.daily_tokens - used) > (cfg.daily_tokens * 0.05)
 
-groq_limiter = GroqLimiter()
-AI_CALLS = 0
+    async def wait_for_rate_limit(self, model_key: str):
+        cfg   = MODELS[model_key]
+        model = cfg.name
+        now   = time.time()
 
-# -------------------------
-# CONFIG LOADING
-# -------------------------
-def load_config() -> Dict:
-    if not os.path.exists(CONFIG_PATH):
-        log.warning(f"Config file {CONFIG_PATH} not found, using defaults")
-        return {}
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
+        if now - self.data["minute_start"].get(model, 0) > 60:
+            self.data["minute_start"][model]   = now
+            self.data["request_count"][model]  = 0
 
-    cfg = {
-        "ai_url": data.get("ai", {}).get("url", ""),
-        "ai_model": data.get("ai", {}).get("model", ""),
-        "ai_key": os.environ.get("GROQ_API_KEY", ""),
-        "tg_token": os.environ.get("TG_BOT_TOKEN", ""),
-        "tg_chat": os.environ.get("TG_CHAT_ID", ""),
-    }
-    for key in [
-        "MAX_ARTICLE_CHARS", "MAX_FETCH_ATTEMPTS", "HTTP_TIMEOUT",
-        "TELEGRAM_LIMIT", "RECENT_SIMILARITY_THRESHOLD",
-        "BIGRAM_SIMILARITY_THRESHOLD", "SIMILARITY_WINDOW",
-        "MAX_STORED_POSTS", "TOPIC_BLOCK_WINDOW", "TOPIC_TOP_WORDS",
-    ]:
-        if key in data:
-            globals()[key] = data[key]
-            cfg[key.lower()] = data[key]
-    return cfg
+        if self.data["request_count"].get(model, 0) >= cfg.rpm - 2:
+            wait = 60 - (now - self.data["minute_start"][model]) + 1
+            logger.info(f"⏳ RPM limit ({model_key}). Waiting {wait:.1f}s")
+            await asyncio.sleep(wait)
+            self.data["minute_start"][model]  = time.time()
+            self.data["request_count"][model] = 0
 
+        last = self.data["last_request_time"].get(model, 0)
+        if now - last < 2:
+            await asyncio.sleep(2)
 
-# -------------------------
-# LINK LOADING
-# -------------------------
-def load_links() -> List[str]:
-    links: List[str] = []
-    url_pattern = re.compile(r'https?://[^\s)]+')
-    if not os.path.exists(LINKS_PATH):
-        log.error(f"Links file {LINKS_PATH} not found")
-        return links
-    with open(LINKS_PATH, "r", encoding="utf-8") as f:
-        for raw in f:
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("http"):
-                links.append(line)
-                continue
-            match = url_pattern.search(line)
-            if match:
-                links.append(match.group(0))
-    log.info(f"Loaded {len(links)} source links")
-    return links
+        self.data["request_count"][model]     = self.data["request_count"].get(model, 0) + 1
+        self.data["last_request_time"][model] = time.time()
+        self.save()
 
+budget      = GroqBudget(GROQ_BUDGET_FILE)
+# ИСПРАВЛЕНИЕ #1: AsyncGroq — асинхронный клиент, корректно работает с await
+groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 
-def load_list(path: str) -> Set[str]:
-    if not os.path.exists(path):
-        return set()
-    with open(path, "r", encoding="utf-8") as f:
-        return {x.strip() for x in f if x.strip()}
+# ============ STATE ============
 
+@dataclass
+class FactItem:
+    url:   str
+    title: str
+    text:  str
+    uid:   str
 
-def save_line(path: str, line: str) -> None:
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
+class FactsState:
+    def __init__(self, path: str):
+        self.path = path
+        self.data = self._load()
 
+    def _load(self) -> dict:
+        if os.path.exists(self.path):
+            try:
+                with open(self.path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {
+            "posted_ids": [],
+            "posts":      [],
+            "topics":     [],
+        }
 
-# -------------------------
-# HTTP HELPERS
-# -------------------------
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64) rv:124.0 Gecko/20100101 Firefox/124.0",
-]
+    def save(self):
+        try:
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, ensure_ascii=False)
+        except Exception:
+            pass
 
+    def is_posted(self, uid: str) -> bool:
+        return uid in self.data["posted_ids"]
 
-def http_get(url: str):
-    headers = {"User-Agent": random.choice(USER_AGENTS)}
-    try:
-        r = requests.get(url, headers=headers, timeout=HTTP_TIMEOUT)
-        if r.status_code >= 400:
-            log.debug(f"Bad status {r.status_code} for {url}")
+    def mark_posted(self, uid: str, title: str, text: str, topic: str):
+        self.data["posted_ids"].append(uid)
+        self.data["posted_ids"] = self.data["posted_ids"][-500:]
+
+        self.data["posts"].append({"title": title, "text": text, "topic": topic})
+        self.data["posts"] = self.data["posts"][-500:]
+
+        self.data["topics"].append(topic)
+        self.data["topics"] = self.data["topics"][-100:]
+
+        self.save()
+
+    def _similarity(self, a: str, b: str) -> float:
+        return combined_similarity(a, b)
+
+    def is_duplicate(self, title: str, text: str) -> bool:
+        for p in self.data["posts"]:
+            if p["title"] == title:
+                return True
+        return False
+
+    def is_too_similar_to_recent(self, title: str, text: str) -> bool:
+        recent = self.data["posts"][-RECENT_POSTS_CHECK:]
+        for p in recent:
+            sim = self._similarity(text, p["text"])
+            if sim >= RECENT_SIMILARITY_THRESHOLD:
+                logger.info(f"🔁 Similar to recent post: sim={sim:.2f}")
+                return True
+        return False
+
+    def needs_diversity(self) -> Optional[str]:
+        recent = self.data["topics"][-RECENT_POSTS_CHECK:]
+        if not recent:
             return None
-        return r
-    except Exception as e:
-        log.debug(f"Request error for {url}: {e}")
+        counts = Counter(recent)
+        if len(counts) < MIN_TOPIC_DIVERSITY:
+            topic, count = counts.most_common(1)[0]
+            logger.info(f"⚠️ Dominant topic '{topic}' in recent posts ({count})")
+            return topic
         return None
 
+    def get_recent_topics_stats(self) -> dict:
+        return dict(Counter(self.data["topics"][-20:]))
 
-# -------------------------
-# ARTICLE EXTRACTION
-# -------------------------
-def extract_article_links(url: str) -> List[str]:
-    r = http_get(url)
-    if not r:
-        return []
-    soup = BeautifulSoup(r.text, "html.parser")
-    links = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if href.startswith("/"):
-            href = urljoin(url, href)
-        if any(x in href for x in [
-            "/article/", "/news/", "/story/", "/202", "/post",
-        ]):
-            links.append(href)
-    return list(dict.fromkeys(links))[:20]
+state = FactsState(STATE_FILE)
 
+# ============ NLP / ТОПИКИ / СХОЖЕСТЬ ============
 
-def extract_text(html: str) -> str:
-    soup = BeautifulSoup(html, "html.parser")
-    paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
-    text = "\n".join(paragraphs)
-    return text[:MAX_ARTICLE_CHARS]
+STOP_WORDS = {
+    "что","это","как","для","или","при","так","все","они","был","она","его","её","он",
+    "мы","вы","но","да","нет","уже","ещё","даже","если","тоже","есть","очень","ведь",
+    "себя","свой","своя","своё","свои","тот","эта","этот","не","ни","же","бы","по","до",
+    "из","без","над","под","через","между","после","перед","среди","когда","который",
+    "которая","которое","которые","можно","нужно","должен","может","будет","были",
+    "быть","стало","стал","одно","один","одна","раз","два","три","лет","год",
+}
 
+def normalize_text(s: str) -> Set[str]:
+    s = s.lower()
+    s = re.sub(r"[^a-zа-я0-9ё]+", " ", s)
+    words = [w for w in s.split() if len(w) > 3 and w not in STOP_WORDS]
+    return set(words)
 
-# -------------------------
-# ROOT PAGE DETECTION
-# -------------------------
-def is_root_page(url: str) -> bool:
-    p = urlparse(url)
-    return p.path in ("", "/") and not p.query and not p.fragment
+def get_bigrams(s: str) -> Set[Tuple[str, str]]:
+    words = sorted(normalize_text(s))
+    if len(words) < 2:
+        return set()
+    return {(words[i], words[i+1]) for i in range(len(words)-1)}
 
+def jaccard(a: Set[str], b: Set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    union = len(a | b)
+    return inter / union if union else 0.0
 
-# -------------------------
-# ARTICLE FETCHER
-# -------------------------
-def fetch_article(url: str, used_urls: Set[str], dead_urls: Set[str]) -> Tuple:
-    if is_root_page(url):
-        log.info(f"Root page detected, skipping as non-article: {url}")
-        return None, None
+def jaccard_similarity(a: str, b: str) -> float:
+    return jaccard(normalize_text(a), normalize_text(b))
 
-    is_category = any(x in url for x in [
-        "history", "culture", "brain", "ideas", "topic",
-        "category", "lifeandstyle", "subject", "essays",
-        "future", "posts", "articles",
-    ])
+def bigram_jaccard(a: str, b: str) -> float:
+    ba = get_bigrams(a)
+    bb = get_bigrams(b)
+    if not ba or not bb:
+        return 0.0
+    inter = len(ba & bb)
+    union = len(ba | bb)
+    return inter / union if union else 0.0
 
-    if is_category:
-        candidates = extract_article_links(url)
-        candidates = [c for c in candidates if c not in used_urls and c not in dead_urls]
-        if not candidates:
-            log.info(f"No fresh articles on category page: {url}")
-            return None, None
-        random.shuffle(candidates)
-        for article_url in candidates:
-            log.info(f"Trying article: {article_url}")
-            r = http_get(article_url)
-            if not r:
-                save_line(DEAD_LINKS_PATH, article_url)
-                dead_urls.add(article_url)
-                continue
-            text = extract_text(r.text)
-            if len(text) < 300:
-                log.info(f"Too short (<300), skipping: {article_url}")
-                continue
-            return article_url, text
-        return None, None
+def combined_similarity(a: str, b: str) -> float:
+    return 0.6 * jaccard_similarity(a, b) + 0.4 * bigram_jaccard(a, b)
 
-    r = http_get(url)
-    if not r:
-        return None, None
-    text = extract_text(r.text)
-    if len(text) < 300:
-        log.info(f"Too short (<300), skipping: {url}")
-        return None, None
-    return url, text
+def extract_topic(text: str) -> str:
+    t = text.lower()
+    # ИСПРАВЛЕНИЕ #3: "привычк" убрано из блока brain — иначе тема habits никогда не присваивалась
+    if any(w in t for w in ("мозг", "нейрон", "память", "сон")):
+        return "brain"
+    if any(w in t for w in ("привычк", "мотиваци", "продуктивност")):
+        return "habits"
+    if any(w in t for w in ("планет", "космос", "звезд", "галактик", "венер", "марс")):
+        return "space"
+    if any(w in t for w in ("рим", "египет", "фараон", "импер", "цар", "археолог")):
+        return "history"
+    if any(w in t for w in ("диабет", "сердц", "здоров", "диета", "ожирен")):
+        return "health"
+    return "other"
 
+# ============ BANNED / КАЧЕСТВО ============
 
-# -------------------------
-# AI PROMPT
-# -------------------------
-PROMPT = """
-Ты пишешь пост для Telegram‑канала «Что ты не знал».
-Ты — автор живого, креативного канала с фактами для аудитории 18–35 лет.
-Задача — рассказать ОДИН яркий факт коротко, конкретно и по‑человечески, максимально варьируя стиль.
-
-ВАЖНО: название канала «Что ты не знал» уже добавляется автоматически перед постом.
-НЕ пиши «Что ты не знал» в заголовке — только цепляющий заголовок самого факта.
-
-Формат поста (строго соблюдай структуру и пустые строки):
-
-1 строка — короткий цепляющий заголовок + 1–2 эмодзи.
-Обязательно варьируй шаблоны заголовка, не используй один шаблон дважды подряд.
-Примеры: «Факт дня: …», «Неочевидная штука про …», «Вот что скрывается за …»,
-«История молчит об этом: …», «В твоём мозге прямо сейчас: …», «Странная правда о …».
-ЗАПРЕЩЕНО начинать заголовок с: «Мозг вскипает», «Что ты не знал», «Мозг взрывается».
-
-1 блок (2–3 предложения) — один КОНКРЕТНЫЙ факт из текста.
-ЖЁСТКОЕ ТРЕБОВАНИЕ — блок ДОЛЖЕН содержать ВСЁ нижеперечисленное:
-- год или диапазон лет (например: «в 1987 году», «с 2010 по 2020»);
-- хотя бы одно конкретное число или процент (например: «91% участников», «в 3 раза быстрее»);
-- кто и что сделал (исследователи, учёные, конкретный человек, название эксперимента/проекта);
-- результат с глаголом: показали, обнаружили, измерили, выяснили, зафиксировали, увеличили, снизили.
-Блок должен ощущаться как мини‑история или сцена.
-ЗАПРЕЩЕНО: описывать сайты, журналы, музеи, экспозиции, издания — только факты о реальном мире.
-ЗАПРЕЩЕНО: «журнал публикует», «сайт освещает», «издание рассказывает», «музей показывает».
-Если исходный текст ТОЛЬКО про сайт/музей/выставку — верни «SKIP».
-Можно добавить 1 уместный эмодзи в конце одного из предложений.
-
-пустая строка
-
-2 блок (2–3 предложения) — простое объяснение:
-- почему факт важен, как меняет понимание темы;
-- можно сравнить «как мы обычно думаем» и «что показывает пример»;
-- разговорный тон, как объяснение другу;
-- можно добавить живую фразу («звучит странно, но так и есть», «раньше об этом вообще не думали»).
-
-пустая строка
-
-3 блок (1–2 предложения) — практический вывод:
-- не реклама, не призыв «подписаться», «перейти на сайт», «посмотреть статьи»;
-- ЗАПРЕЩЕНО: «теперь ты можешь», «теперь любой может», «был ли у тебя опыт»;
-- личное, прикладное действие для читателя;
-- только то, что читатель может реально применить сегодня;
-- если факт короткий — пиши короткий вывод, не растягивай водой;
-- можно добавить 1 эмодзи, если уместно.
-
-пустая строка
-
-Финал — вопрос читателю:
-- цепляй личный опыт («было ли у тебя так?», «смог бы ты так поступить?»);
-- избегай «что вы думаете по этому поводу?»;
-- варьируй конструкции, не начинай каждый вопрос одинаково.
-
-Последняя строка — 3–4 хэштега на русском:
-- сначала тема (#психология, #история, #наука, #здоровье, #привычки и т.п.);
-- не дублируй одно слово в разных формах;
-- не используй в хэштегах имя канала.
-
-Стиль и длина:
-- Коротко, живо, разговорным русским, без канцелярита.
-- ОДИН главный факт и ОДНА понятная мысль вокруг него.
-- Цель — 700–900 символов (не более 900).
-- Чередуй короткие и длинные предложения.
-- Максимум 1–2 выделения **жирным**.
-- Не копируй формулировки из примеров.
-
-Запрещённые формулировки — НИКОГДА не использовать:
-- «проливает новый свет», «мы можем глубже понять эпоху», «это открывает дискуссию»
-- «позволяет лучше понять наши корни», «это важно для нашего благополучия»
-- «новые данные показывают», «это поднимает важные вопросы»
-- «в современном мире это особенно актуально», «это важно для нас всех»
-- «это меняет картину», «по-честному, это меняет картинку»
-- «загугли», «узнай больше в интернете», «копнуть глубже», «если хочешь узнать больше»
-- «начни интересоваться новостями», «следи за новостями», «будь в курсе последних открытий»
-- «подписывайся», «поделись с друзьями», «расскажи друзьям»
-- «прямо сейчас посмотреть», «самые популярные статьи», «независимый журнал»
-- «публикует исследования», «освещает последние открытия», «делает науку доступной»
-- «Мозг вскипает», «Мозг взрывается», «Что ты не знал» (в заголовке)
-- «теперь ты можешь», «теперь любой может», «был ли у тебя опыт»
-
-Разнообразие:
-- Не делай два поста подряд на одну тему.
-- Меняй заходы: «Представь ситуацию…», «Обычно мы думаем, что…», «Есть одна странная деталь…».
-
-Если в тексте НЕТ яркой цифры, года, имени или конкретного кейса — верни «SKIP».
-Если текст только про сайт, музей или выставку — верни «SKIP».
-
-Допустимая длина поста — максимум 900 символов, цель 700–900.
-
-Исходный текст статьи:
-{article}
-"""
-
-# -------------------------
-# BANNED PHRASES
-# -------------------------
 BANNED_PHRASES = [
     "проливает новый свет",
     "мы можем глубже понять эпоху",
@@ -438,699 +331,436 @@ BANNED_PHRASES = [
     "узнай больше в интернете",
     "копнуть глубже",
     "начни интересоваться новостями",
-    "начни интересоваться новостями археологии",
     "обращай внимание на открытия последних лет",
     "следи за новостями",
     "будь в курсе последних открытий",
     "подписывайся",
-    "подписывайся на",
     "поделись с друзьями",
     "расскажи друзьям",
     "публикует исследования",
     "освещает последние открытия",
-    "на его страницах публикуются",
-    "подводят итоги самых популярных",
     "независимый журнал",
-    "прямо сейчас посмотреть",
-    "прямо сейчас узнать",
-    "самые популярные статьи месяца",
     "делает науку доступной",
-    "делает ее доступной",
-    "любой может прочитать",
-    "любой желающий может",
-    "каждый месяц они публикуют",
-    "каждый месяц подводят",
-    "из лабораторий, университетов",
-    "из лабораторий и университетов",
-    "независимое издание",
-    "открытый доступ",
-    "бесплатный доступ к статьям",
     "теперь ты можешь",
     "теперь любой может",
     "был ли у тебя опыт",
 ]
 
-# -------------------------
-# BANNED TITLE TEMPLATES
-# -------------------------
-_BANNED_TITLE_PATTERNS = re.compile(
-    r"^("
-    r"мозг вскипает"
-    r"|мозг взрывается"
-    r"|мозг вскипел"
-    r"|что ты не знал"
-    r")",
-    re.IGNORECASE,
-)
+BANNED_TOPICS = [
+    "международный суд", "международного суда", "международный уголовный суд",
+    "геноцид", "этническая чистка", "военное преступление", "военные преступления",
+    "санкции", "резолюция", "оон", "united nations", "icc", "icj",
+    "палестин", "израиль", "сектор газа", "газе", "холокост",
+    "этнический конфликт", "референдум", "выборы", "парламент", "президент",
+    "верховный суд", "supreme court", "human rights watch", "amnesty international",
+]
 
-
-def has_banned_title(text: str) -> bool:
-    first_line = text.strip().split("\n", 1)[0].lower()
-    if _BANNED_TITLE_PATTERNS.search(first_line):
-        log.info(f"Banned title template detected: {first_line[:60]}")
-        return True
-    return False
-
-
-# -------------------------
-# STOP‑WORDS
-# -------------------------
-STOP_WORDS = {
-    "что", "это", "как", "для", "или", "при", "так", "все", "они",
-    "был", "она", "его", "её", "он", "мы", "вы", "но", "да", "нет",
-    "уже", "ещё", "даже", "если", "тоже", "есть", "очень", "ведь",
-    "себя", "свой", "своя", "своё", "свои", "тот", "эта", "этот",
-    "не", "ни", "же", "бы", "по", "до", "из", "без", "над", "под",
-    "через", "между", "после", "перед", "среди", "хотя", "когда",
-    "который", "которая", "которое", "которые", "можно", "нужно",
-    "должен", "может", "будет", "были", "быть", "стало", "стал",
-    "одно", "один", "одна", "раз", "два", "три", "лет", "год",
-    "загугли", "глубже", "хочешь", "копнуть", "если",
-}
-
-
-def normalize_text(s: str) -> Set[str]:
-    s = s.lower()
-    s = re.sub(r"[^a-zа-я0-9ё]+", " ", s)
-    words = [w for w in s.split() if len(w) > 3 and w not in STOP_WORDS]
-    return set(words)
-
-
-def get_bigrams(s: str) -> Set[Tuple[str, str]]:
-    words = sorted(normalize_text(s))
-    if len(words) < 2:
-        return set()
-    return {(words[i], words[i + 1]) for i in range(len(words) - 1)}
-
-
-def extract_topic_words(s: str, top_n: int = TOPIC_TOP_WORDS) -> List[str]:
-    s = s.lower()
-    s = re.sub(r"[^a-zа-я0-9ё]+", " ", s)
-    words = [w for w in s.split() if len(w) > 4 and w not in STOP_WORDS]
-    counted = Counter(words)
-    return [w for w, _ in counted.most_common(top_n)]
-
-
-# -------------------------
-# SIMILARITY METRICS
-# -------------------------
-def jaccard_similarity(a: str, b: str) -> float:
-    sa = normalize_text(a)
-    sb = normalize_text(b)
-    if not sa or not sb:
-        return 0.0
-    inter = len(sa & sb)
-    union = len(sa | sb)
-    return inter / union if union else 0.0
-
-
-def bigram_jaccard(a: str, b: str) -> float:
-    ba = get_bigrams(a)
-    bb = get_bigrams(b)
-    if not ba or not bb:
-        return 0.0
-    inter = len(ba & bb)
-    union = len(ba | bb)
-    return inter / union if union else 0.0
-
-
-def combined_similarity(a: str, b: str) -> float:
-    return 0.6 * jaccard_similarity(a, b) + 0.4 * bigram_jaccard(a, b)
-
-
-# -------------------------
-# POSTS STORAGE
-# -------------------------
-def load_posts(path: str = POSTS_LOG_PATH) -> List[str]:
-    if not os.path.exists(path):
-        return []
-    with open(path, "r", encoding="utf-8") as f:
-        return [line.strip() for line in f if line.strip()]
-
-
-def save_post(text: str, path: str = POSTS_LOG_PATH) -> None:
-    posts = load_posts(path)
-    posts.append(text.replace("\n", " \\n "))
-    if len(posts) > MAX_STORED_POSTS:
-        posts = posts[-MAX_STORED_POSTS:]
-    with open(path, "w", encoding="utf-8") as f:
-        for p in posts:
-            f.write(p + "\n")
-
-
-# -------------------------
-# TOPIC TRACKER
-# -------------------------
-def load_recent_topics(path: str = TOPICS_LOG_PATH) -> List[List[str]]:
-    if not os.path.exists(path):
-        return []
-    result = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                result.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return result
-
-
-def save_topic(words: List[str], path: str = TOPICS_LOG_PATH) -> None:
-    topics = load_recent_topics(path)
-    topics.append(words)
-    max_topics = TOPIC_BLOCK_WINDOW * 3
-    if len(topics) > max_topics:
-        topics = topics[-max_topics:]
-    with open(path, "w", encoding="utf-8") as f:
-        for t in topics:
-            f.write(json.dumps(t, ensure_ascii=False) + "\n")
-
-
-def is_topic_repeated(new_post: str, recent_topics: List[List[str]]) -> bool:
-    new_words = set(extract_topic_words(new_post))
-    if not new_words:
-        return False
-    window = recent_topics[-TOPIC_BLOCK_WINDOW:]
-    for old_words in window:
-        old_set = set(old_words)
-        if not old_set:
-            continue
-        overlap = len(new_words & old_set)
-        ratio = overlap / min(len(new_words), len(old_set))
-        if ratio >= 0.5:
-            log.info(f"Topic overlap {ratio:.2f} (shared: {new_words & old_set})")
-            return True
-    return False
-
-
-# -------------------------
-# DUPLICATE & BANALITY CHECKS
-# -------------------------
-def is_too_similar_to_previous(
-    new_post: str,
-    old_posts: List[str],
-    word_threshold: float = RECENT_SIMILARITY_THRESHOLD,
-    bigram_threshold: float = BIGRAM_SIMILARITY_THRESHOLD,
-) -> bool:
-    window = old_posts[-SIMILARITY_WINDOW:]
-    for old in window:
-        if not old:
-            continue
-        word_sim = jaccard_similarity(new_post, old)
-        if word_sim >= word_threshold:
-            log.info(f"Word similarity {word_sim:.2f} >= {word_threshold} — duplicate")
-            return True
-        bigram_sim = bigram_jaccard(new_post, old)
-        if bigram_sim >= bigram_threshold:
-            log.info(f"Bigram similarity {bigram_sim:.2f} >= {bigram_threshold} — duplicate")
-            return True
-    return False
-
+TITLE_BAN = re.compile(r"^(мозг вскипает|мозг взрывается|что ты не знал)", re.IGNORECASE)
 
 def contains_banned_phrases(text: str) -> bool:
     lower = text.lower()
-    for phrase in BANNED_PHRASES:
-        if phrase in lower:
-            log.info(f"Banned phrase found: «{phrase}»")
+    for p in BANNED_PHRASES:
+        if p in lower:
+            logger.info(f"🚫 Banned phrase: {p}")
             return True
     return False
 
-
-# -------------------------
-# PROMO / WEBSITE-AD DETECTION
-# -------------------------
-_PROMO_PATTERNS = re.compile(
-    r"("
-    r"публику(ет|ются|ют)\s+(исследования|статьи|материалы|открытия)"
-    r"|освещает\s+(последние|новые|актуальные)"
-    r"|независим(ый|ое)\s+(журнал|издание|ресурс|сайт)"
-    r"|на\s+(его|её|их)\s+страницах"
-    r"|подводят\s+итоги"
-    r"|самые\s+популярные\s+статьи"
-    r"|прямо\s+сейчас\s+(посмотреть|узнать|перейти|открыть)"
-    r"|делает\s+(науку|её|ее)\s+доступной"
-    r"|любой\s+может\s+(прочитать|узнать|найти)"
-    r"|из\s+лабораторий.{0,20}университет"
-    r"|каждый\s+месяц\s+(они|редакция|журнал)"
-    r"|открытый\s+доступ\s+к"
-    r"|бесплатн\w+\s+доступ"
-    r")",
-    re.IGNORECASE,
-)
-
-_PROMO_TITLE_PATTERNS = re.compile(
-    r"("
-    r"\d{1,2}\s+лет\s+\w+\s+(публику|освещ|пишет|рассказыва)"
-    r"|с\s+\d{4}\s+года\s+\w+\s+(публику|освещ|пишет)"
-    r")",
-    re.IGNORECASE,
-)
-
-
-def is_promo_for_website(text: str) -> bool:
-    if _PROMO_PATTERNS.search(text):
-        log.info("Post looks like website promo — skipping")
+def has_banned_title(text: str) -> bool:
+    first = text.strip().split("\n", 1)[0].lower()
+    if TITLE_BAN.search(first):
+        logger.info(f"🚫 Banned title: {first}")
         return True
-
-    first_line = text.strip().split("\n", 1)[0]
-    if _PROMO_TITLE_PATTERNS.search(first_line):
-        log.info("Post title looks like website promo — skipping")
-        return True
-
-    first_block_end = text.find("\n\n")
-    first_block = text[:first_block_end] if first_block_end != -1 else text
-    media_words = re.findall(
-        r"\b(журнал|издание|сайт|ресурс|портал|платформа|медиа)\b",
-        first_block.lower()
-    )
-    if len(media_words) >= 2:
-        log.info(f"First block mentions media entity {len(media_words)}x — likely promo")
-        return True
-
     return False
 
+def is_banned_topic(text: str) -> bool:
+    lower = text.lower()
+    for w in BANNED_TOPICS:
+        if w in lower:
+            logger.info(f"🚫 Banned topic keyword: {w}")
+            return True
+    return False
 
-# -------------------------
-# POST CLEANUP
-# -------------------------
-_GOOGLE_HINT_PATTERNS = re.compile(
-    r"(если хочешь (копнуть глубже|узнать больше)|загугли|узнай больше в интернете"
-    r"|копнуть глубже|поищи в интернете)",
-    re.IGNORECASE,
-)
-
-_BAD_CTA_PATTERNS = re.compile(
-    r"("
-    r"начни интересоваться новостями"
-    r"|обращай внимание на открытия последних лет"
-    r"|следи за новостями"
-    r"|будь в курсе последних открытий"
-    r"|подписывайся"
-    r"|поделись с друзьями"
-    r"|расскажи друзьями"
-    r"|прямо сейчас (посмотреть|узнать|перейти|открыть)"
-    r"|самые популярные статьи месяца"
-    r"|теперь ты можешь"
-    r"|теперь любой может"
-    r"|был ли у тебя опыт"
-    r")",
-    re.IGNORECASE,
-)
-
-
-def strip_google_hint(text: str) -> str:
-    match = _GOOGLE_HINT_PATTERNS.search(text)
-    if not match:
-        return text
-    cut_pos = match.start()
-    newline_pos = text.rfind("\n", 0, cut_pos)
-    if newline_pos != -1:
-        cut_pos = newline_pos
-    cleaned = text[:cut_pos].rstrip()
-    log.info("Stripped google-hint block from post")
-    return cleaned
-
-
-def strip_calls_to_action(text: str) -> str:
-    lines = text.split("\n")
-    cleaned = []
-    for line in lines:
-        if _BAD_CTA_PATTERNS.search(line):
-            log.info(f"Stripped CTA line: {line[:60]}")
-            continue
-        cleaned.append(line.rstrip())
-    return "\n".join(cleaned).strip()
-
-
-# -------------------------
-# CONTENT QUALITY CHECKS
-# -------------------------
 def has_strong_fact(text: str) -> bool:
-    """
-    Проверяет весь пост на наличие:
-    - хотя бы одного года (19xx или 20xx)
-    - хотя бы одной цифры (не только год)
-    - хотя бы одного глагола результата
-    """
     t = text.lower()
-
-    has_year = bool(re.search(r"\b(19\d{2}|20\d{2})\b", t))
-    has_number = bool(re.search(r"\b\d+([.,]\d+)?\b", t))
+    has_year        = bool(re.search(r"\b(19\d{2}|20\d{2})\b", t))
+    has_number      = bool(re.search(r"\b\d+([.,]\d+)?\b", t))
     has_result_verb = bool(re.search(
-        r"\b(показал[аи]?|выяснил[аи]?|обнаружил[аи]?|нашл[ие]"
-        r"|измерил[аи]?|увеличил[аи]?|снизил[аи]?|повысил[аи]?"
-        r"|зафиксировал[аи]?|доказал[аи]?|установил[аи]?"
-        r"|выявил[аи]?|подтвердил[аи]?|определил[аи]?)\b",
+        r"\b(показал[аи]?|выяснил[аи]?|обнаружил[аи]?|нашл[ие]|измерил[аи]?|"
+        r"увеличил[аи]?|снизил[аи]?|зафиксировал[аи]?|доказал[аи]?|установил[аи]?|"
+        r"выявил[аи]?|подтвердил[аи]?|определил[аи]?)\b",
         t
     ))
-
     if not (has_year and has_number and has_result_verb):
-        log.info(
-            f"Strong fact check: year={has_year}, "
-            f"number={has_number}, result_verb={has_result_verb}"
-        )
-
+        logger.info(f"Strong fact fail: year={has_year}, num={has_number}, verb={has_result_verb}")
     return has_year and has_number and has_result_verb
 
-
-def has_forbidden_soft_cta(text: str) -> bool:
-    return bool(re.search(
-        r"(теперь ты можешь|теперь любой может|был ли у тебя опыт|было ли у тебя|бывало ли у тебя)",
-        text.lower()
-    ))
-
-
 def looks_like_announcement(text: str) -> bool:
-    if len(text) < 350:
+    if len(text) < MIN_POST_LEN:
         return True
     sentences = re.split(r"[.!?]+", text)
     sentences = [s.strip() for s in sentences if s.strip()]
     if len(sentences) < 5:
         return True
-    first_line = text.strip().split("\n", 1)[0].lower()
-    if "каждый год" in first_line or "часто происходит" in first_line:
-        return True
     return False
-
 
 def normalize_blank_lines(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
-    lines = [line.rstrip() for line in text.split("\n")]
+    lines = [l.rstrip() for l in text.split("\n")]
     return "\n".join(lines)
 
-
-# -------------------------
-# SMART CLIP
-# -------------------------
-def smart_clip_post(post: str, limit: int = 900, min_cut: int = 400) -> str:
+def smart_clip(post: str, limit: int = MAX_POST_LEN, min_cut: int = 400) -> str:
     if len(post) <= limit:
         return post
-    raw = post[:limit]
+    raw      = post[:limit]
     last_dot = raw.rfind(".")
-    last_q = raw.rfind("?")
+    last_q   = raw.rfind("?")
     last_exc = raw.rfind("!")
-    cut_pos = max(last_dot, last_q, last_exc)
-    if cut_pos != -1 and cut_pos >= min_cut:
-        clipped = raw[:cut_pos + 1].rstrip()
-        log.info(f"Smart clipped post at position {cut_pos + 1}")
-        return clipped
-    log.info(f"Hard clipped post at {limit} chars (no good sentence end found)")
+    cut = max(last_dot, last_q, last_exc)
+    if cut != -1 and cut >= min_cut:
+        logger.info(f"✂️ Smart clip at {cut}")
+        return raw[:cut+1].rstrip()
+    logger.info(f"✂️ Hard clip at {limit}")
     return raw.rstrip()
 
+# ============ ЗАГРУЗКА ЛИНКОВ / СТАТЕЙ ============
 
-# -------------------------
-# AI CALL WITH LIMITER
-# -------------------------
-def call_ai(cfg: Dict, article: str) -> str:
-    """
-    Вызов Groq c лимитером, ограничением Retry-After и мягкими ретраями.
-    Если не получилось — возвращает пустую строку, чтобы main() шёл дальше.
-    """
-    payload = {
-        "model": cfg["ai_model"],
-        "messages": [{"role": "user", "content": PROMPT.format(article=article)}],
-        "max_tokens": 600,
-        "temperature": 0.9,
-        "top_p": 0.9,
-    }
-    headers = {
-        "Authorization": f"Bearer {cfg['ai_key']}",
-        "Content-Type": "application/json",
-    }
-
-    global AI_CALLS
-    if AI_CALLS >= MAX_AI_CALLS_PER_RUN:
-        log.info(f"Groq call limit per run reached ({MAX_AI_CALLS_PER_RUN}), skipping AI")
-        return ""
-
-    last_error = None
-
-    for attempt in range(1, AI_RETRY_ATTEMPTS + 1):
-        log.info(f"Groq API call attempt {attempt}/{AI_RETRY_ATTEMPTS}")
-
-        groq_limiter.wait_before_call()
-
-        try:
-            resp = requests.post(cfg["ai_url"], json=payload, headers=headers, timeout=60)
-
-            # 429 Too Many Requests
-            if resp.status_code == 429:
-                retry_after_raw = resp.headers.get("Retry-After")
-                try:
-                    retry_after = int(retry_after_raw) if retry_after_raw else AI_RETRY_BASE_DELAY * attempt
-                except ValueError:
-                    retry_after = AI_RETRY_BASE_DELAY * attempt
-
-                wait = min(retry_after, MAX_RETRY_AFTER)
-                log.warning(
-                    f"Groq 429 Too Many Requests, Retry-After={retry_after_raw}, "
-                    f"sleep {wait}s (capped)"
-                )
-                last_error = f"429 Retry-After={retry_after_raw}"
-                if attempt < AI_RETRY_ATTEMPTS:
-                    time.sleep(wait)
-                    continue
-                else:
-                    return ""
-
-            # Другие HTTP‑ошибки
-            if resp.status_code >= 400:
-                last_error = f"HTTP {resp.status_code}"
-                log.warning(f"Groq HTTP error {resp.status_code}: {resp.text[:200]}")
-                if attempt < AI_RETRY_ATTEMPTS:
-                    wait = AI_RETRY_BASE_DELAY * attempt
-                    log.info(f"Retry after {wait}s")
-                    time.sleep(wait)
-                    continue
-                else:
-                    return ""
-
-            data = resp.json()
-            AI_CALLS += 1
-            return data["choices"][0]["message"]["content"].strip()
-
-        except requests.exceptions.RequestException as e:
-            last_error = str(e)
-            log.warning(f"Groq request exception on attempt {attempt}: {e}")
-            if attempt < AI_RETRY_ATTEMPTS:
-                wait = AI_RETRY_BASE_DELAY * attempt
-                log.info(f"Retry after {wait}s")
-                time.sleep(wait)
-                continue
-            else:
-                return ""
-
-    log.error(f"Groq call failed after retries: {last_error}")
-    return ""
-
-
-# -------------------------
-# TELEGRAM / DRY-RUN
-# -------------------------
-def send_telegram(cfg: Dict, text: str, url: str) -> None:
-    full_post = f"{CHANNEL_HEADER}\n\n{text}"
-    msg = f"{full_post}\n\nИсточник: {url}"
-    if len(msg) > TELEGRAM_LIMIT:
-        msg = msg[:TELEGRAM_LIMIT]
-
-    if DRY_RUN:
-        print("\n" + "=" * 80)
-        print("DRY RUN — сообщение НЕ отправлено в Telegram")
-        print("=" * 80)
-        print(msg)
-        print("=" * 80 + "\n")
-        log.info("DRY RUN: post printed to console instead of sending to Telegram")
-    else:
-        resp = requests.post(
-            f"https://api.telegram.org/bot{cfg['tg_token']}/sendMessage",
-            json={"chat_id": cfg["tg_chat"], "text": msg},
-        )
-        resp.raise_for_status()
-        log.info("Post sent to Telegram")
-
-    save_post(text)
-    topic_words = extract_topic_words(text)
-    save_topic(topic_words)
-    log.info(f"Saved topic keywords: {topic_words}")
-
-
-# -------------------------
-# SOURCE PICKER
-# -------------------------
-def pick_sources(all_links: List[str]) -> Tuple[List[str], Set[str], Set[str]]:
-    used = load_list(USED_LINKS_PATH)
-    dead = load_list(DEAD_LINKS_PATH)
-    available = [x for x in all_links if x not in used and x not in dead]
-    random.shuffle(available)
-    return available[:MAX_FETCH_ATTEMPTS], used, dead
-
-
-# -------------------------
-# HELPERS
-# -------------------------
-def mark_used(url: str, article_url: str, used_urls: Set[str]) -> None:
-    save_line(USED_LINKS_PATH, url)
-    used_urls.add(url)
-    if article_url != url:
-        save_line(USED_LINKS_PATH, article_url)
-        used_urls.add(article_url)
-
-
-def load_recent_domains(path: str = RECENT_DOMAINS_PATH) -> List[str]:
-    if not os.path.exists(path):
+def load_links() -> List[str]:
+    if not os.path.exists(FACTS_LINKS_FILE):
+        logger.error(f"No links file: {FACTS_LINKS_FILE}")
         return []
-    with open(path, "r", encoding="utf-8") as f:
-        return [line.strip() for line in f if line.strip()]
+    out = []
+    with open(FACTS_LINKS_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            out.append(line)
+    logger.info(f"📚 Loaded {len(out)} source links")
+    return out
 
+BANNED_DOMAINS = [
+    "icj-cij.org", "icc-cpi.int", "un.org", "hrw.org", "amnesty.org",
+    "theguardian.com/world", "nytimes.com/section/opinion", "vox.com", "lawfareblog.com",
+    "justsecurity.org", "brookings.edu", "brennancenter.org",
+]
 
-def save_recent_domains(domains: List[str], path: str = RECENT_DOMAINS_PATH) -> None:
-    last = domains[-MAX_RECENT_DOMAINS:]
-    with open(path, "w", encoding="utf-8") as f:
-        for d in last:
-            f.write(d + "\n")
+def is_root(url: str) -> bool:
+    p = urlparse(url)
+    return p.path in ("", "/") and not p.query and not p.fragment
 
+async def http_get(session: aiohttp.ClientSession, url: str) -> Optional[str]:
+    try:
+        async with session.get(url, timeout=HTTP_TIMEOUT) as resp:
+            if resp.status >= 400:
+                logger.info(f"HTTP {resp.status} for {url}")
+                return None
+            return await resp.text()
+    except Exception as e:
+        logger.info(f"HTTP error {url}: {e}")
+        return None
 
-# -------------------------
-# MAIN
-# -------------------------
-def main() -> None:
-    log.info("Starting generator (DRY_RUN=%s)", DRY_RUN)
-    cfg = load_config()
+def extract_article_text(html: str) -> str:
+    soup       = BeautifulSoup(html, "html.parser")
+    paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
+    text       = "\n".join(paragraphs)
+    return text[:MAX_ARTICLE_CHARS]
 
-    missing = [k for k in ("ai_url", "ai_model", "ai_key", "tg_token", "tg_chat") if not cfg.get(k)]
-    if missing and not DRY_RUN:
-        log.error(f"Missing config values: {', '.join(missing)}")
-        return
+def extract_article_links(base_url: str, html: str) -> List[str]:
+    soup  = BeautifulSoup(html, "html.parser")
+    links = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if href.startswith("/"):
+            href = urljoin(base_url, href)
+        if any(x in href for x in ["/article", "/news", "/story", "/202", "/post", "/science", "/history", "/space"]):
+            links.append(href)
+    seen = set()
+    out  = []
+    for l in links:
+        if l not in seen:
+            seen.add(l)
+            out.append(l)
+    return out[:20]
+
+async def fetch_article_from_source(session: aiohttp.ClientSession, url: str) -> Optional[FactItem]:
+    if any(bad in url for bad in BANNED_DOMAINS):
+        logger.info(f"Skip banned domain: {url}")
+        return None
+
+    logger.info(f"🌐 Fetch from {url}")
+    html = await http_get(session, url)
+    if not html:
+        return None
+
+    if is_root(url):
+        links = extract_article_links(url, html)
+        if not links:
+            logger.info(f"No article links on {url}")
+            return None
+        random.shuffle(links)
+        for art in links:
+            uid = f"fact_{hash(art) & 0xffffffff:x}"
+            # ИСПРАВЛЕНИЕ #4: пропускаем уже обработанные статьи ещё до HTTP-запроса
+            if state.is_posted(uid):
+                continue
+            html2 = await http_get(session, art)
+            if not html2:
+                continue
+            text = extract_article_text(html2)
+            if len(text) < MIN_ARTICLE_CHARS:
+                continue
+            return FactItem(url=art, title=art, text=text, uid=uid)
+        return None
+    else:
+        text = extract_article_text(html)
+        if len(text) < MIN_ARTICLE_CHARS:
+            logger.info(f"Too short article: {url}")
+            return None
+        uid = f"fact_{hash(url) & 0xffffffff:x}"
+        return FactItem(url=url, title=url, text=text, uid=uid)
+
+# ============ PROMPT / GROQ ============
+
+FACT_PROMPT = """
+Ты пишешь пост для Telegram-канала «Что ты не знал».
+Задача — рассказать ОДИН яркий научный или исторический факт по-человечески.
+
+Формат:
+
+1 строка — цепляющий заголовок + 1–2 эмодзи.
+НЕ начинай с «Что ты не знал», «Мозг вскипает», «Мозг взрывается».
+
+1 блок (2–3 предложения) — один конкретный факт из текста.
+Обязательно:
+- год или диапазон лет;
+- хотя бы одно число или процент;
+- кто и что сделал (исследователи, учёные, миссия, эксперимент, исторический персонаж);
+- результат с глаголом (показали, обнаружили, измерили, выяснили и т.п.).
+Фокус на реальном мире: космос, мозг, тело, привычки, история, техника.
+Если текст только про сайт/журнал/музей/портал — верни «SKIP».
+
+пустая строка
+
+2 блок (2–3 предложения) — простое объяснение, как это работает или почему так получается.
+Разговорный тон, без пафоса.
+
+пустая строка
+
+3 блок (1–2 предложения) — практический вывод для читателя (что можно сделать/переосмыслить сегодня).
+Без рекламы, без «подписывайся», без «загугли», без «следи за новостями».
+
+пустая строка
+
+Финал — вопрос читателю про личный опыт/восприятие (без политики и без новостей).
+
+Последняя строка — 3–4 хэштега на русском (#наука, #психология, #история, #здоровье и т.п., без названия канала).
+
+Жёстко запрещено:
+- обсуждать текущую политику, войны, решения судов, санкции, права человека;
+- оправдывать/обвинять страны, народы, религии;
+- писать про «международный суд», «ООН», «санкции», «геноцид», «военные преступления»;
+- звать читать сайт, новости, журнал, «узнать больше в интернете»;
+- использовать клише: «проливает новый свет», «это поднимает важные вопросы» и т.п.
+
+Если в тексте НЕТ яркой цифры, года, имени или конкретного кейса — верни «SKIP».
+Если текст про новости, политику, суды, санкции, права человека — верни «SKIP».
+
+Максимальная длина поста — 900 символов, цель 700–900.
+
+Исходный текст статьи:
+{article}
+"""
+
+async def call_groq_fact(item: FactItem) -> Optional[str]:
+    model_key = "light" if budget.can_use_model("light") else "heavy"
+    if not budget.can_use_model(model_key):
+        logger.warning("⚠️ Groq budget exhausted")
+        return None
+
+    cfg = MODELS[model_key]
+
+    await budget.wait_for_rate_limit(model_key)
+
+    prompt = FACT_PROMPT.format(article=item.text)
+
+    try:
+        # ИСПРАВЛЕНИЕ #1: groq_client теперь AsyncGroq — await корректен
+        resp = await groq_client.chat.completions.create(
+            model=cfg.name,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=600,
+            temperature=0.9,
+            top_p=0.9,
+        )
+        content = resp.choices[0].message.content.strip()
+        usage   = getattr(resp, "usage", None)
+        tokens  = usage.total_tokens if usage else 600
+        budget.add_tokens(cfg.name, tokens)
+        return content
+    except Exception as e:
+        logger.error(f"Groq error: {e}")
+        return None
+
+# ============ TELEGRAM ============
+
+async def send_to_telegram(session: aiohttp.ClientSession, text: str, url: str):
+    # ИСПРАВЛЕНИЕ #2: убран хардкод «Что ты не знал» в начале сообщения.
+    # ИИ сам генерирует заголовок поста, а «Что ты не знал» — забанённый паттерн
+    # заголовка. Добавляем только ссылку на источник в конец.
+    full = f"{text}\n\nИсточник: {url}"
+    if len(full) > 4096:
+        full = full[:4096]
+
+    api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHANNEL_ID, "text": full}
+    try:
+        async with session.post(api_url, json=payload, timeout=HTTP_TIMEOUT) as resp:
+            if resp.status >= 400:
+                body = await resp.text()
+                logger.error(f"Telegram HTTP {resp.status}: {body[:200]}")
+            else:
+                logger.info("✅ Posted to Telegram")
+    except Exception as e:
+        logger.error(f"Telegram error: {e}")
+
+# ============ MAIN ============
+
+async def main():
+    logger.info("🚀 Starting Facts Autopost")
 
     links = load_links()
     if not links:
-        log.error("No links loaded – check links.txt")
         return
 
     random.shuffle(links)
 
-    candidates, used_urls, dead_urls = pick_sources(links)
-    if not candidates:
-        log.warning("No available sources. Clear used_links.txt to reset.")
-        return
+    async with aiohttp.ClientSession() as session:
+        items: List[FactItem] = []
+        for url in links[:40]:
+            item = await fetch_article_from_source(session, url)
+            if item and not state.is_posted(item.uid):
+                items.append(item)
 
-    old_posts = load_posts()
-    recent_topics = load_recent_topics()
-    recent_domains: List[str] = load_recent_domains()
+        logger.info(f"📦 Got {len(items)} candidate articles")
 
-    for url in candidates:
-        domain = urlparse(url).netloc
+        if not items:
+            logger.info("No candidate facts")
+            return
 
-        if domain in recent_domains:
-            log.info(f"Skipping {url} — domain {domain} used recently (persistent)")
-            continue
+        dominant = state.needs_diversity()
+        if dominant:
+            others = []
+            same   = []
+            for it in items:
+                t = extract_topic(it.text)
+                if t == dominant:
+                    same.append(it)
+                else:
+                    others.append(it)
+            items = others + same
+            logger.info(f"⚖️ Reordered items: {len(others)} other topics first")
+        else:
+            random.shuffle(items)
 
-        log.info(f"Trying source: {url}")
-        article_url, text = fetch_article(url, used_urls, dead_urls)
+        posts_done        = 0
+        attempts          = 0
+        duplicates_skipped = 0
+        rejected          = 0
 
-        if not article_url or not text:
-            is_category = any(x in url for x in [
-                "history", "culture", "brain", "ideas", "topic",
-                "category", "lifeandstyle", "subject", "essays",
-                "future", "posts", "articles",
-            ])
-            if not is_category:
-                save_line(DEAD_LINKS_PATH, url)
-                dead_urls.add(url)
-            continue
+        for it in items:
+            if posts_done >= MAX_POSTS_PER_RUN:
+                break
+            if attempts >= MAX_ATTEMPTS:
+                logger.info("Max attempts reached")
+                break
 
-        if article_url in used_urls:
-            log.info(f"Article already used: {article_url}, skipping")
-            continue
+            attempts += 1
+            logger.info(f"🔍 [{attempts}/{MAX_ATTEMPTS}] {it.url}")
 
-        try:
-            log.info(f"Generating post from: {article_url}")
-            post = call_ai(cfg, text)
-
-            if not post:
-                log.info("No post from Groq for this article, trying next source")
-                mark_used(url, article_url, used_urls)
+            if state.is_duplicate(it.title, it.text):
+                topic = extract_topic(it.text)
+                state.mark_posted(it.uid, it.title, it.text, topic)
+                duplicates_skipped += 1
                 continue
 
-            time.sleep(2)
-
-            post = strip_google_hint(post)
-            post = strip_calls_to_action(post)
-            post = normalize_blank_lines(post)
-
-            if post.strip().upper().startswith("SKIP"):
-                log.info("AI returned SKIP — no good fact found in article")
-                mark_used(url, article_url, used_urls)
+            if state.is_too_similar_to_recent(it.title, it.text):
+                topic = extract_topic(it.text)
+                state.mark_posted(it.uid, it.title, it.text, topic)
+                duplicates_skipped += 1
                 continue
 
-            if len(post) < 350:
-                log.info(f"Post too short ({len(post)} chars), skipping")
+            post_text = await call_groq_fact(it)
+            if not post_text:
+                topic = extract_topic(it.text)
+                state.mark_posted(it.uid, it.title, it.text, topic)
+                rejected += 1
                 continue
 
-            if len(post) > 950:
-                log.info(f"Post too long ({len(post)} chars), smart clipping to 900")
-                post = smart_clip_post(post, limit=900, min_cut=400)
+            post_text = normalize_blank_lines(post_text)
 
-            if not has_strong_fact(post):
-                log.info("Post has no strong fact (year + number + result verb), skipping")
+            if post_text.strip().upper().startswith("SKIP"):
+                logger.info("AI returned SKIP")
+                topic = extract_topic(it.text)
+                state.mark_posted(it.uid, it.title, it.text, topic)
+                rejected += 1
                 continue
 
-            if looks_like_announcement(post):
-                log.info("Post looks like shallow announcement, skipping")
+            if len(post_text) < MIN_POST_LEN:
+                logger.info(f"Post too short ({len(post_text)})")
+                topic = extract_topic(it.text)
+                state.mark_posted(it.uid, it.title, it.text, topic)
+                rejected += 1
                 continue
 
-            if has_banned_title(post):
-                log.info("Post has banned title template, skipping")
+            if len(post_text) > MAX_POST_LEN + 50:
+                logger.info(f"Post too long ({len(post_text)}), clipping")
+                post_text = smart_clip(post_text)
+
+            if not has_strong_fact(post_text):
+                logger.info("No strong fact, skip")
+                topic = extract_topic(it.text)
+                state.mark_posted(it.uid, it.title, it.text, topic)
+                rejected += 1
                 continue
 
-            if contains_banned_phrases(post):
-                log.info("Post contains banned phrases, skipping")
+            if looks_like_announcement(post_text):
+                logger.info("Looks like announcement, skip")
+                topic = extract_topic(it.text)
+                state.mark_posted(it.uid, it.title, it.text, topic)
+                rejected += 1
                 continue
 
-            if has_forbidden_soft_cta(post):
-                log.info("Post contains forbidden soft CTA/experience phrase, skipping")
+            if has_banned_title(post_text):
+                logger.info("Banned title, skip")
+                topic = extract_topic(it.text)
+                state.mark_posted(it.uid, it.title, it.text, topic)
+                rejected += 1
                 continue
 
-            if is_promo_for_website(post):
-                log.info("Post is promo for a website/publication, skipping")
-                mark_used(url, article_url, used_urls)
+            if contains_banned_phrases(post_text):
+                logger.info("Contains banned phrase, skip")
+                topic = extract_topic(it.text)
+                state.mark_posted(it.uid, it.title, it.text, topic)
+                rejected += 1
                 continue
 
-            if old_posts:
-                max_sim = max(
-                    combined_similarity(post, old)
-                    for old in old_posts[-SIMILARITY_WINDOW:] if old
-                )
-                log.info(f"Max combined similarity to recent posts: {max_sim:.3f}")
-
-            if is_too_similar_to_previous(post, old_posts):
-                log.info("Post is too similar to previous ones, skipping")
-                mark_used(url, article_url, used_urls)
+            if is_banned_topic(post_text):
+                logger.info("Banned topic, skip")
+                topic = extract_topic(it.text)
+                state.mark_posted(it.uid, it.title, it.text, topic)
+                rejected += 1
                 continue
 
-            if is_topic_repeated(post, recent_topics):
-                log.info("Topic already covered recently, skipping")
-                mark_used(url, article_url, used_urls)
-                continue
+            await send_to_telegram(session, post_text, it.url)
+            topic = extract_topic(it.text)
+            state.mark_posted(it.uid, it.title, it.text, topic)
+            posts_done += 1
 
-            send_telegram(cfg, post, article_url)
-            mark_used(url, article_url, used_urls)
-
-            recent_domains.append(domain)
-            save_recent_domains(recent_domains)
-
-            log.info("Post processed successfully")
-            break  # один пост за запуск
-
-        except Exception as e:
-            log.error(f"Failed on {article_url}: {e}")
-            continue
-    else:
-        log.warning("All sources exhausted or failed")
-
+        logger.info(f"📊 Done: {posts_done} posted, {rejected} rejected, {duplicates_skipped} duplicates")
+        stats = state.get_recent_topics_stats()
+        if stats:
+            logger.info(f"📈 Recent topics: {stats}")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
 
