@@ -181,3 +181,8 @@ https://www.esa.int/Science_Exploration
 https://www.zdnet.com/article/amazing-tech-facts-you-didnt-know
 https://core.ac.uk
 https://naked-science.ru
+https://data.worldbank.org
+https://openalex.org
+https://runivers.ru
+https://datasetsearch.research.google.com
+https://eurostat.ec.europa.eu
