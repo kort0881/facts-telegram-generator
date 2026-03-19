@@ -34,16 +34,17 @@ jobs:
       - name: Prepare cache dir
         run: mkdir -p cache_facts
 
+      - name: List Python files  # Добавьте для дебага
+        run: find . -name "*.py" -ls
+
       - name: Generate and post facts
         timeout-minutes: 10
-        # ИСПРАВЛЕНИЕ #1: правильный путь к скрипту
-        run: python facts_autopost.py
+        run: python scripts/facts_generator.py  # ИСПРАВЛЕНИЕ: правильный путь
 
       - name: Commit state
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # ИСПРАВЛЕНИЕ #2: коммитим только кеш, links-файл не трогаем
           git add cache_facts/
           git diff --staged --quiet || git commit -m "chore: update facts cache [skip ci]"
           git push || echo "No changes to commit"
