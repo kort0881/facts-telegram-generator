@@ -23,10 +23,7 @@ from collections import Counter
 import aiohttp
 from bs4 import BeautifulSoup
 
-# ИСПРАВЛЕНИЕ #1: используем AsyncGroq вместо Groq (синхронный клиент нельзя await-ить)
 from groq import AsyncGroq
-
-# ============ ЛОГИРОВАНИЕ ============
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,8 +32,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("FactsBot")
 logging.getLogger("httpx").setLevel(logging.WARNING)
-
-# ============ ENV ============
 
 def get_env(name: str) -> str:
     val = os.getenv(name)
@@ -71,8 +66,6 @@ MIN_ARTICLE_CHARS = 300
 
 MAX_POST_LEN = 900
 MIN_POST_LEN = 350
-
-# ============ МОДЕЛИ / БЮДЖЕТ ============
 
 @dataclass
 class ModelConfig:
@@ -156,10 +149,7 @@ class GroqBudget:
         self.save()
 
 budget      = GroqBudget(GROQ_BUDGET_FILE)
-# ИСПРАВЛЕНИЕ #1: AsyncGroq — асинхронный клиент, корректно работает с await
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
-
-# ============ STATE ============
 
 @dataclass
 class FactItem:
@@ -242,8 +232,6 @@ class FactsState:
 
 state = FactsState(STATE_FILE)
 
-# ============ NLP / ТОПИКИ / СХОЖЕСТЬ ============
-
 STOP_WORDS = {
     "что","это","как","для","или","при","так","все","они","был","она","его","её","он",
     "мы","вы","но","да","нет","уже","ещё","даже","если","тоже","есть","очень","ведь",
@@ -289,7 +277,6 @@ def combined_similarity(a: str, b: str) -> float:
 
 def extract_topic(text: str) -> str:
     t = text.lower()
-    # ИСПРАВЛЕНИЕ #3: "привычк" убрано из блока brain — иначе тема habits никогда не присваивалась
     if any(w in t for w in ("мозг", "нейрон", "память", "сон")):
         return "brain"
     if any(w in t for w in ("привычк", "мотиваци", "продуктивност")):
@@ -301,8 +288,6 @@ def extract_topic(text: str) -> str:
     if any(w in t for w in ("диабет", "сердц", "здоров", "диета", "ожирен")):
         return "health"
     return "other"
-
-# ============ BANNED / КАЧЕСТВО ============
 
 BANNED_PHRASES = [
     "проливает новый свет",
@@ -422,7 +407,47 @@ def smart_clip(post: str, limit: int = MAX_POST_LEN, min_cut: int = 400) -> str:
     logger.info(f"✂️ Hard clip at {limit}")
     return raw.rstrip()
 
-# ============ ЗАГРУЗКА ЛИНКОВ / СТАТЕЙ ============
+# ------------ АВТОХЕШТЕГИ ------------
+
+def generate_hashtags(post_text: str) -> str:
+    topic = extract_topic(post_text)
+    base_tags = []
+
+    if topic == "brain":
+        base_tags = ["#мозг", "#психология", "#нейронаука"]
+    elif topic == "habits":
+        base_tags = ["#привычки", "#психология", "#продуктивность"]
+    elif topic == "space":
+        base_tags = ["#космос", "#астрономия", "#наука"]
+    elif topic == "history":
+        base_tags = ["#история", "#наука"]
+    elif topic == "health":
+        base_tags = ["#здоровье", "#наука"]
+    else:
+        base_tags = ["#наука"]
+
+    extra = []
+    t = post_text.lower()
+    if "эксперимент" in t or "исследован" in t:
+        extra.append("#эксперименты")
+    if "процент" in t or "%" in t:
+        extra.append("#статистика")
+    if "учёные" in t or "ученые" in t:
+        extra.append("#ученые")
+
+    tags = base_tags + extra
+    # уникализируем и ограничиваем 3–4 тегами
+    seen = set()
+    uniq = []
+    for tag in tags:
+        if tag not in seen:
+            seen.add(tag)
+            uniq.append(tag)
+    if len(uniq) > 4:
+        uniq = uniq[:4]
+    return " ".join(uniq)
+
+# ------------ ЗАГРУЗКА ЛИНКОВ / СТАТЕЙ ------------
 
 def load_links() -> List[str]:
     if not os.path.exists(FACTS_LINKS_FILE):
@@ -500,7 +525,6 @@ async def fetch_article_from_source(session: aiohttp.ClientSession, url: str) ->
         random.shuffle(links)
         for art in links:
             uid = f"fact_{hash(art) & 0xffffffff:x}"
-            # ИСПРАВЛЕНИЕ #4: пропускаем уже обработанные статьи ещё до HTTP-запроса
             if state.is_posted(uid):
                 continue
             html2 = await http_get(session, art)
@@ -518,8 +542,6 @@ async def fetch_article_from_source(session: aiohttp.ClientSession, url: str) ->
             return None
         uid = f"fact_{hash(url) & 0xffffffff:x}"
         return FactItem(url=url, title=url, text=text, uid=uid)
-
-# ============ PROMPT / GROQ ============
 
 FACT_PROMPT = """
 Ты пишешь пост для Telegram-канала «Что ты не знал».
@@ -584,7 +606,6 @@ async def call_groq_fact(item: FactItem) -> Optional[str]:
     prompt = FACT_PROMPT.format(article=item.text)
 
     try:
-        # ИСПРАВЛЕНИЕ #1: groq_client теперь AsyncGroq — await корректен
         resp = await groq_client.chat.completions.create(
             model=cfg.name,
             messages=[{"role": "user", "content": prompt}],
@@ -601,13 +622,16 @@ async def call_groq_fact(item: FactItem) -> Optional[str]:
         logger.error(f"Groq error: {e}")
         return None
 
-# ============ TELEGRAM ============
-
 async def send_to_telegram(session: aiohttp.ClientSession, text: str, url: str):
-    # ИСПРАВЛЕНИЕ #2: убран хардкод «Что ты не знал» в начале сообщения.
-    # ИИ сам генерирует заголовок поста, а «Что ты не знал» — забанённый паттерн
-    # заголовка. Добавляем только ссылку на источник в конец.
-    full = f"{text}\n\nИсточник: {url}"
+    # нормализуем текст и добавляем свои хештеги в самый низ
+    text = normalize_blank_lines(text).strip()
+
+    auto_tags = generate_hashtags(text)
+    if auto_tags:
+        full = f"{text}\n\n{auto_tags}\n\nИсточник: {url}"
+    else:
+        full = f"{text}\n\nИсточник: {url}"
+
     if len(full) > 4096:
         full = full[:4096]
 
@@ -622,8 +646,6 @@ async def send_to_telegram(session: aiohttp.ClientSession, text: str, url: str):
                 logger.info("✅ Posted to Telegram")
     except Exception as e:
         logger.error(f"Telegram error: {e}")
-
-# ============ MAIN ============
 
 async def main():
     logger.info("🚀 Starting Facts Autopost")
@@ -662,10 +684,10 @@ async def main():
         else:
             random.shuffle(items)
 
-        posts_done        = 0
-        attempts          = 0
+        posts_done         = 0
+        attempts           = 0
         duplicates_skipped = 0
-        rejected          = 0
+        rejected           = 0
 
         for it in items:
             if posts_done >= MAX_POSTS_PER_RUN:
