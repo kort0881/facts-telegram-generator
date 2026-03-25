@@ -1,32 +1,15 @@
 # ==========================
 # Базовая наука / фан-факты
 # ==========================
-https://www.nature.com
-https://www.science.org
-https://www.pnas.org
+https://www.nature.com/nature/articles
+https://www.science.org/news
 https://www.sciencedaily.com
-https://www.phys.org
 https://www.scientificamerican.com
 https://www.sciencenews.org
 https://www.newscientist.com
 https://www.livescience.com
-https://www.livescience.com/science-facts
-https://www.livescience.com/28170-25-fun-facts.html
-https://www.livescience.com/62162-amazing-science-facts.html
-https://www.livescience.com/weird-facts-about-the-human-body
 https://www.nationalgeographic.com/science
-https://www.nationalgeographic.com/science/article/amazing-facts
 https://science.nasa.gov
-https://www.esa.int/Science_Exploration
-https://www.bbcsciencefocus.com/science/fun-facts
-https://www.americanscientist.org
-https://www.rd.com/list/interesting-facts
-https://www.rd.com/list/interesting-facts-about-space
-https://www.sciencejournalforkids.org
-https://www.sciencefocus.com
-https://www.sciencealert.com
-https://www.popularmechanics.com/science
-https://www.treehugger.com/amazing-nature-facts-4857632
 https://www.quantamagazine.org
 https://www.zmescience.com
 https://interestingengineering.com
@@ -37,31 +20,14 @@ https://arstechnica.com/science
 # ==========================
 # Психология / привычки / мозг
 # ==========================
-https://jamesclear.com/habits
-https://jamesclear.com/three-steps-habit-change
-https://jamesclear.com/one-sentence-habits
-https://jamesclear.com/implementation-intentions
-https://jamesclear.com/habit-stacking
-https://jamesclear.com/identity-based-habits
-https://jamesclear.com/motivation-rituals
-https://www.scientificamerican.com/article/how-to-build-new-habits
-https://www.scientificamerican.com/article/the-surprising-science-of-habit-formation
-https://www.psychologytoday.com/intl/basics/habits
-https://www.apa.org/monitor/2022/03/cover-habit-formation
-https://greatergood.berkeley.edu
+https://jamesclear.com/articles
+https://www.scientificamerican.com/mind
+https://www.apa.org/news
 https://www.frontiersin.org/journals/psychology
-https://psyarxiv.com
-https://www.scientificamerican.com/article/how-memory-works
-https://www.scientificamerican.com/article/what-is-the-memory-capacity
-https://www.scientificamerican.com/article/how-to-improve-your-memory
-https://www.dana.org/article/memory-and-the-brain
-https://www.psychologytoday.com/intl/basics/memory
+https://www.dana.org/articles
 https://www.newscientist.com/subject/brain
-https://www.newscientist.com/subject/psychology
 https://www.bbc.com/future/columns/brain-hacks
-https://www.bbc.com/future/article/20210928-the-science-of-memory-and-why-we-forget
 https://www.nature.com/subjects/neuroscience
-https://www.snexplores.org
 https://bigthink.com/neuropsych
 https://www.psychologicalscience.org/news
 
@@ -69,81 +35,55 @@ https://www.psychologicalscience.org/news
 # История / археология
 # ==========================
 https://www.smithsonianmag.com/history
-https://www.smithsonianmag.com/category/world-history
-https://www.smithsonianmag.com/history/ancient-civilizations
 https://www.archaeology.org/news
-https://www.worldhistory.org
-https://www.worldhistory.org/timeperiod
-https://www.historytoday.com
+https://www.worldhistory.org/articles
 https://www.historyextra.com
-https://www.historyextra.com/period/ancient-egypt
 https://www.livescience.com/history
-https://www.britannica.com/topic/history
 https://www.nationalgeographic.com/history
-https://www.nationalgeographic.com/history/article/ancient-egypt-discoveries
 https://www.sapiens.org
-https://www.ancient-origins.net
-https://www.thehistorypress.co.uk/articles
 https://historyfacts.com
 
 # ==========================
 # Странные / неочевидные факты
 # ==========================
 https://www.boredpanda.com/weird-facts
-https://www.boredpanda.com/article/weird-facts-about-animals
 https://www.mentalfloss.com
 https://www.factretriever.com
-https://www.factretriever.com/weird-facts
 https://www.rd.com/list/fun-facts
-https://www.parade.com/weird-facts
-https://www.parade.com/weird-facts-about-history
 https://www.kickassfacts.com
-https://ohfact.com
 https://www.thefactsite.com
 
 # ==========================
-# Здоровье (без политики)
+# Здоровье (научное)
 # ==========================
-https://pubmed.ncbi.nlm.nih.gov
-https://clinicaltrials.gov
-https://www.nih.gov
-https://www.who.int/news-room/fact-sheets/detail/healthy-diet
-https://www.cdc.gov/healthyweight/index.html
+https://www.nih.gov/news-events/news-releases
 https://www.mayoclinic.org/healthy-lifestyle
-https://www.mayoclinic.org/healthy-lifestyle/nutrition-and-healthy-eating
-https://jamanetwork.com
 https://www.thelancet.com
 https://www.bmj.com
-https://www.cochranelibrary.com
 https://www.scientificamerican.com/health
 https://www.livescience.com/health
-https://www.bbc.com/future/article/20211108-the-science-of-longevity
 https://www.health.harvard.edu/blog
-https://www.psychologytoday.com/intl/topics/health
 
 # ==========================
 # Космос
 # ==========================
-https://science.nasa.gov/solar-system
+https://science.nasa.gov/news
 https://www.space.com
-https://www.space.com/science-astronomy
-https://www.space.com/interesting-space-facts
 https://www.universetoday.com
 https://skyandtelescope.org/astronomy-news
 https://www.esa.int/Science_Exploration/Space_Science
-https://hubblesite.org/contents/articles
+https://hubblesite.org/news
 
 # ==========================
 # Русскоязычный научпоп
 # ==========================
-https://nplus1.ru
-https://postnauka.ru
-https://elementy.ru
-https://indicator.ru
-https://naked-science.ru
+https://nplus1.ru/news
+https://postnauka.ru/articles
+https://elementy.ru/news
+https://indicator.ru/news
+https://naked-science.ru/article
 https://kot.sh
 
 # ==========================
 # КОНЕЦ СПИСКА
 # ==========================
-# Всего источников: 317
