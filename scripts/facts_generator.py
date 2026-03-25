@@ -55,17 +55,17 @@ FACTS_LINKS_FILE = "facts_links_clean.txt"
 HTTP_TIMEOUT            = aiohttp.ClientTimeout(total=25)
 TEXT_ONLY_THRESHOLD     = 700
 MAX_POSTS_PER_RUN       = 1
-MAX_ATTEMPTS            = 15
+MAX_ATTEMPTS            = 30  # Увеличено с 15
 
-RECENT_POSTS_CHECK          = 10
-RECENT_SIMILARITY_THRESHOLD = 0.40
+RECENT_POSTS_CHECK          = 20  # Увеличено с 10
+RECENT_SIMILARITY_THRESHOLD = 0.35  # Снижено с 0.40
 MIN_TOPIC_DIVERSITY         = 3
 
 MAX_ARTICLE_CHARS = 2500
 MIN_ARTICLE_CHARS = 300
 
 MAX_POST_LEN = 900
-MIN_POST_LEN = 350
+MIN_POST_LEN = 250  # Снижено с 350
 
 @dataclass
 class ModelConfig:
@@ -174,6 +174,7 @@ class FactsState:
             "posted_ids": [],
             "posts":      [],
             "topics":     [],
+            "posted_urls": [],  # Новое: список URL для проверки дубликатов
         }
 
     def save(self):
@@ -186,9 +187,24 @@ class FactsState:
     def is_posted(self, uid: str) -> bool:
         return uid in self.data["posted_ids"]
 
-    def mark_posted(self, uid: str, title: str, text: str, topic: str):
+    def is_url_posted(self, url: str) -> bool:
+        """Проверка URL с нормализацией"""
+        normalized = url.split('?')[0].split('#')[0].rstrip('/')
+        for posted_url in self.data.get("posted_urls", []):
+            if normalized == posted_url.split('?')[0].split('#')[0].rstrip('/'):
+                return True
+        return False
+
+    def mark_posted(self, uid: str, url: str, title: str, text: str, topic: str):
         self.data["posted_ids"].append(uid)
         self.data["posted_ids"] = self.data["posted_ids"][-500:]
+
+        # Сохраняем URL
+        normalized_url = url.split('?')[0].split('#')[0].rstrip('/')
+        if "posted_urls" not in self.data:
+            self.data["posted_urls"] = []
+        self.data["posted_urls"].append(normalized_url)
+        self.data["posted_urls"] = self.data["posted_urls"][-500:]
 
         self.data["posts"].append({"title": title, "text": text, "topic": topic})
         self.data["posts"] = self.data["posts"][-500:]
@@ -223,8 +239,9 @@ class FactsState:
         counts = Counter(recent)
         if len(counts) < MIN_TOPIC_DIVERSITY:
             topic, count = counts.most_common(1)[0]
-            logger.info(f"⚠️ Dominant topic '{topic}' in recent posts ({count})")
-            return topic
+            if count >= RECENT_POSTS_CHECK * 0.5:  # Только если 50%+ постов одной темы
+                logger.info(f"⚠️ Dominant topic '{topic}' in recent posts ({count})")
+                return topic
         return None
 
     def get_recent_topics_stats(self) -> dict:
@@ -277,16 +294,18 @@ def combined_similarity(a: str, b: str) -> float:
 
 def extract_topic(text: str) -> str:
     t = text.lower()
-    if any(w in t for w in ("мозг", "нейрон", "память", "сон")):
+    if any(w in t for w in ("мозг", "нейрон", "память", "сон", "психик")):
         return "brain"
     if any(w in t for w in ("привычк", "мотиваци", "продуктивност")):
         return "habits"
-    if any(w in t for w in ("планет", "космос", "звезд", "галактик", "венер", "марс")):
+    if any(w in t for w in ("планет", "космос", "звезд", "галактик", "венер", "марс", "спутник")):
         return "space"
-    if any(w in t for w in ("рим", "египет", "фараон", "импер", "цар", "археолог")):
+    if any(w in t for w in ("рим", "египет", "фараон", "импер", "цар", "археолог", "древн", "век")):
         return "history"
-    if any(w in t for w in ("диабет", "сердц", "здоров", "диета", "ожирен")):
+    if any(w in t for w in ("диабет", "сердц", "здоров", "диета", "ожирен", "болезн")):
         return "health"
+    if any(w in t for w in ("животн", "природ", "вид", "эволюц", "биолог")):
+        return "nature"
     return "other"
 
 BANNED_PHRASES = [
@@ -366,25 +385,53 @@ def is_banned_topic(text: str) -> bool:
     return False
 
 def has_strong_fact(text: str) -> bool:
+    """СМЯГЧЁННАЯ валидация фактов"""
     t = text.lower()
-    has_year        = bool(re.search(r"\b(19\d{2}|20\d{2})\b", t))
-    has_number      = bool(re.search(r"\b\d+([.,]\d+)?\b", t))
-    has_result_verb = bool(re.search(
-        r"\b(показал[аи]?|выяснил[аи]?|обнаружил[аи]?|нашл[ие]|измерил[аи]?|"
-        r"увеличил[аи]?|снизил[аи]?|зафиксировал[аи]?|доказал[аи]?|установил[аи]?|"
-        r"выявил[аи]?|подтвердил[аи]?|определил[аи]?)\b",
+    
+    # Год или век
+    has_year = bool(re.search(r"\b(1[0-9]{3}|20[0-9]{2})\b|веке|году", t))
+    
+    # Число/процент/измерение
+    has_number = bool(re.search(
+        r"\b\d+([.,]\d+)?\s*(км|метр|тонн|процент|%|раз|млн|млрд|тысяч|человек|лет|дней|часов|градус|мг|кг|литр)",
         t
     ))
-    if not (has_year and has_number and has_result_verb):
-        logger.info(f"Strong fact fail: year={has_year}, num={has_number}, verb={has_result_verb}")
-    return has_year and has_number and has_result_verb
+    
+    # Научные термины
+    has_science = bool(re.search(
+        r"(учёные|ученые|исследовател|исследование|открыли|обнаружили|доказали|эксперимент|анализ)",
+        t, re.IGNORECASE
+    ))
+    
+    # Уникальные явления
+    has_unique = bool(re.search(
+        r"(единственн|уникальн|редк|необычн|странн|удивительн|впервые|первый)",
+        t, re.IGNORECASE
+    ))
+    
+    # Глаголы действия (расширенный список)
+    has_action = bool(re.search(
+        r"(показал|выяснил|обнаружил|нашл|измерил|увеличил|снизил|зафиксировал|доказал|"
+        r"установил|выявил|подтвердил|определил|может|способен|умеет|создает|производит|"
+        r"достигает|превышает|содержит)",
+        t, re.IGNORECASE
+    ))
+    
+    score = sum([has_year, has_number, has_science, has_unique, has_action])
+    
+    logger.info(f"Fact strength: year={has_year}, num={has_number}, "
+                f"sci={has_science}, unique={has_unique}, action={has_action} "
+                f"(score: {score}/5)")
+    
+    # Требуем хотя бы 1 критерий из 5 (было: год И число И глагол)
+    return score >= 1
 
 def looks_like_announcement(text: str) -> bool:
     if len(text) < MIN_POST_LEN:
         return True
     sentences = re.split(r"[.!?]+", text)
     sentences = [s.strip() for s in sentences if s.strip()]
-    if len(sentences) < 5:
+    if len(sentences) < 3:  # Снижено с 5
         return True
     return False
 
@@ -407,8 +454,6 @@ def smart_clip(post: str, limit: int = MAX_POST_LEN, min_cut: int = 400) -> str:
     logger.info(f"✂️ Hard clip at {limit}")
     return raw.rstrip()
 
-# ------------ АВТОХЕШТЕГИ ------------
-
 def generate_hashtags(post_text: str) -> str:
     topic = extract_topic(post_text)
     base_tags = []
@@ -423,8 +468,10 @@ def generate_hashtags(post_text: str) -> str:
         base_tags = ["#история", "#наука"]
     elif topic == "health":
         base_tags = ["#здоровье", "#наука"]
+    elif topic == "nature":
+        base_tags = ["#природа", "#биология", "#наука"]
     else:
-        base_tags = ["#наука"]
+        base_tags = ["#наука", "#факты"]
 
     extra = []
     t = post_text.lower()
@@ -436,7 +483,6 @@ def generate_hashtags(post_text: str) -> str:
         extra.append("#ученые")
 
     tags = base_tags + extra
-    # уникализируем и ограничиваем 3–4 тегами
     seen = set()
     uniq = []
     for tag in tags:
@@ -446,8 +492,6 @@ def generate_hashtags(post_text: str) -> str:
     if len(uniq) > 4:
         uniq = uniq[:4]
     return " ".join(uniq)
-
-# ------------ ЗАГРУЗКА ЛИНКОВ / СТАТЕЙ ------------
 
 def load_links() -> List[str]:
     if not os.path.exists(FACTS_LINKS_FILE):
@@ -524,6 +568,9 @@ async def fetch_article_from_source(session: aiohttp.ClientSession, url: str) ->
             return None
         random.shuffle(links)
         for art in links:
+            # Проверка URL на дубликаты
+            if state.is_url_posted(art):
+                continue
             uid = f"fact_{hash(art) & 0xffffffff:x}"
             if state.is_posted(uid):
                 continue
@@ -536,6 +583,8 @@ async def fetch_article_from_source(session: aiohttp.ClientSession, url: str) ->
             return FactItem(url=art, title=art, text=text, uid=uid)
         return None
     else:
+        if state.is_url_posted(url):
+            return None
         text = extract_article_text(html)
         if len(text) < MIN_ARTICLE_CHARS:
             logger.info(f"Too short article: {url}")
@@ -553,12 +602,13 @@ FACT_PROMPT = """
 НЕ начинай с «Что ты не знал», «Мозг вскипает», «Мозг взрывается».
 
 1 блок (2–3 предложения) — один конкретный факт из текста.
-Обязательно:
-- год или диапазон лет;
-- хотя бы одно число или процент;
+Желательно включить:
+- год, диапазон лет, век или эпоху;
+- хотя бы одно число, процент или измерение;
 - кто и что сделал (исследователи, учёные, миссия, эксперимент, исторический персонаж);
 - результат с глаголом (показали, обнаружили, измерили, выяснили и т.п.).
-Фокус на реальном мире: космос, мозг, тело, привычки, история, техника.
+
+Фокус на реальном мире: космос, мозг, тело, привычки, история, техника, природа.
 Если текст только про сайт/журнал/музей/портал — верни «SKIP».
 
 пустая строка
@@ -575,8 +625,6 @@ FACT_PROMPT = """
 
 Финал — вопрос читателю про личный опыт/восприятие (без политики и без новостей).
 
-Последняя строка — 3–4 хэштега на русском (#наука, #психология, #история, #здоровье и т.п., без названия канала).
-
 Жёстко запрещено:
 - обсуждать текущую политику, войны, решения судов, санкции, права человека;
 - оправдывать/обвинять страны, народы, религии;
@@ -584,10 +632,10 @@ FACT_PROMPT = """
 - звать читать сайт, новости, журнал, «узнать больше в интернете»;
 - использовать клише: «проливает новый свет», «это поднимает важные вопросы» и т.п.
 
-Если в тексте НЕТ яркой цифры, года, имени или конкретного кейса — верни «SKIP».
+Если в тексте НЕТ конкретного факта/кейса — верни «SKIP».
 Если текст про новости, политику, суды, санкции, права человека — верни «SKIP».
 
-Максимальная длина поста — 900 символов, цель 700–900.
+Максимальная длина поста — 900 символов, цель 600–800.
 
 Исходный текст статьи:
 {article}
@@ -609,13 +657,13 @@ async def call_groq_fact(item: FactItem) -> Optional[str]:
         resp = await groq_client.chat.completions.create(
             model=cfg.name,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=600,
+            max_tokens=700,  # Увеличено с 600
             temperature=0.9,
             top_p=0.9,
         )
         content = resp.choices[0].message.content.strip()
         usage   = getattr(resp, "usage", None)
-        tokens  = usage.total_tokens if usage else 600
+        tokens  = usage.total_tokens if usage else 700
         budget.add_tokens(cfg.name, tokens)
         return content
     except Exception as e:
@@ -623,7 +671,6 @@ async def call_groq_fact(item: FactItem) -> Optional[str]:
         return None
 
 async def send_to_telegram(session: aiohttp.ClientSession, text: str, url: str):
-    # нормализуем текст и добавляем свои хештеги в самый низ
     text = normalize_blank_lines(text).strip()
 
     auto_tags = generate_hashtags(text)
@@ -658,10 +705,16 @@ async def main():
 
     async with aiohttp.ClientSession() as session:
         items: List[FactItem] = []
-        for url in links[:40]:
+        
+        # Увеличено количество источников для парсинга
+        for url in links[:60]:  # Было 40
             item = await fetch_article_from_source(session, url)
             if item and not state.is_posted(item.uid):
                 items.append(item)
+            
+            # Останавливаемся, если набрали достаточно кандидатов
+            if len(items) >= 30:
+                break
 
         logger.info(f"📦 Got {len(items)} candidate articles")
 
@@ -701,20 +754,20 @@ async def main():
 
             if state.is_duplicate(it.title, it.text):
                 topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.title, it.text, topic)
+                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
                 duplicates_skipped += 1
                 continue
 
             if state.is_too_similar_to_recent(it.title, it.text):
                 topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.title, it.text, topic)
+                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
                 duplicates_skipped += 1
                 continue
 
             post_text = await call_groq_fact(it)
             if not post_text:
                 topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.title, it.text, topic)
+                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
                 rejected += 1
                 continue
 
@@ -723,14 +776,14 @@ async def main():
             if post_text.strip().upper().startswith("SKIP"):
                 logger.info("AI returned SKIP")
                 topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.title, it.text, topic)
+                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
                 rejected += 1
                 continue
 
             if len(post_text) < MIN_POST_LEN:
                 logger.info(f"Post too short ({len(post_text)})")
                 topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.title, it.text, topic)
+                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
                 rejected += 1
                 continue
 
@@ -741,41 +794,41 @@ async def main():
             if not has_strong_fact(post_text):
                 logger.info("No strong fact, skip")
                 topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.title, it.text, topic)
+                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
                 rejected += 1
                 continue
 
             if looks_like_announcement(post_text):
                 logger.info("Looks like announcement, skip")
                 topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.title, it.text, topic)
+                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
                 rejected += 1
                 continue
 
             if has_banned_title(post_text):
                 logger.info("Banned title, skip")
                 topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.title, it.text, topic)
+                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
                 rejected += 1
                 continue
 
             if contains_banned_phrases(post_text):
                 logger.info("Contains banned phrase, skip")
                 topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.title, it.text, topic)
+                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
                 rejected += 1
                 continue
 
             if is_banned_topic(post_text):
                 logger.info("Banned topic, skip")
                 topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.title, it.text, topic)
+                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
                 rejected += 1
                 continue
 
             await send_to_telegram(session, post_text, it.url)
             topic = extract_topic(it.text)
-            state.mark_posted(it.uid, it.title, it.text, topic)
+            state.mark_posted(it.uid, it.url, it.title, it.text, topic)
             posts_done += 1
 
         logger.info(f"📊 Done: {posts_done} posted, {rejected} rejected, {duplicates_skipped} duplicates")
@@ -785,4 +838,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
