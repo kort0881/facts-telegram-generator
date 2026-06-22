@@ -1,1 +1,1 @@
-{"daily_tokens": {}, "last_reset": "2026-06-22", "last_request_time": {"llama-3.1-8b-instant": 1782150099.9840593}, "request_count": {"llama-3.1-8b-instant": 2}, "minute_start": {"llama-3.1-8b-instant": 1782150097.7800355}}
+{"daily_tokens": {"llama-3.1-8b-instant": 1516}, "last_reset": "2026-06-22", "last_request_time": {"llama-3.1-8b-instant": 1782160644.6181402}, "request_count": {"llama-3.1-8b-instant": 1}, "minute_start": {"llama-3.1-8b-instant": 1782160644.618137}}
