@@ -1,89 +1,37 @@
-# ==========================
-# Базовая наука / фан-факты
-# ==========================
-https://www.nature.com/nature/articles
-https://www.science.org/news
+# ===== РАБОЧИЙ СПИСОК ИСТОЧНИКОВ (2026-06-22) =====
+# Основан на успешном прогоне и исключает 403/404/платные сайты
+
 https://www.sciencedaily.com
-https://www.scientificamerican.com
 https://www.sciencenews.org
-https://www.newscientist.com
 https://www.livescience.com
-https://www.nationalgeographic.com/science
-https://science.nasa.gov
-https://www.quantamagazine.org
-https://www.zmescience.com
-https://interestingengineering.com
-https://bigthink.com/hard-science
-https://www.universetoday.com
-https://arstechnica.com/science
-
-# ==========================
-# Психология / привычки / мозг
-# ==========================
-https://jamesclear.com/articles
-https://www.scientificamerican.com/mind
-https://www.apa.org/news
-https://www.frontiersin.org/journals/psychology
-https://www.dana.org/articles
-https://www.newscientist.com/subject/brain
-https://www.bbc.com/future/columns/brain-hacks
-https://www.nature.com/subjects/neuroscience
-https://bigthink.com/neuropsych
-https://www.psychologicalscience.org/news
-
-# ==========================
-# История / археология
-# ==========================
 https://www.smithsonianmag.com/history
+https://www.smithsonianmag.com/category/world-history
 https://www.archaeology.org/news
-https://www.worldhistory.org/articles
-https://www.historyextra.com
-https://www.livescience.com/history
-https://www.nationalgeographic.com/history
-https://www.sapiens.org
-https://historyfacts.com
-
-# ==========================
-# Странные / неочевидные факты
-# ==========================
-https://www.boredpanda.com/weird-facts
+https://www.archaeology.org/news/ancient-discoveries-2023
 https://www.mentalfloss.com
 https://www.factretriever.com
-https://www.rd.com/list/fun-facts
-https://www.kickassfacts.com
-https://www.thefactsite.com
-
-# ==========================
-# Здоровье (научное)
-# ==========================
-https://www.nih.gov/news-events/news-releases
-https://www.mayoclinic.org/healthy-lifestyle
-https://www.thelancet.com
-https://www.bmj.com
-https://www.scientificamerican.com/health
-https://www.livescience.com/health
+https://www.rd.com/list/interesting-facts
+https://www.boredpanda.com/weird-facts
+https://jamesclear.com/habits
+https://jamesclear.com/identity-based-habits
+https://jamesclear.com/three-steps-habit-change
+https://greatergood.berkeley.edu
+https://www.bbc.com/future
+https://www.snexplores.org
+https://www.historyextra.com
+https://www.popularmechanics.com/science
 https://www.health.harvard.edu/blog
-
-# ==========================
-# Космос
-# ==========================
-https://science.nasa.gov/news
+https://www.cdc.gov/healthyweight/index.html
+https://www.cdc.gov/nutrition/index.html
+https://postnauka.ru
+https://elementy.ru
+https://naked-science.ru
+https://cyberleninka.ru
+https://www.worldhistory.org/articles
 https://www.space.com
-https://www.universetoday.com
-https://skyandtelescope.org/astronomy-news
-https://www.esa.int/Science_Exploration/Space_Science
-https://hubblesite.org/news
-
-# ==========================
-# Русскоязычный научпоп
-# ==========================
+https://science.nasa.gov/news
 https://nplus1.ru/news
-https://postnauka.ru/articles
-https://elementy.ru/news
 https://indicator.ru/news
-https://naked-science.ru/article
-https://kot.sh
 
-# ==========================
-# КОНЕЦ СПИСКА
-# ==========================
+# Всего: 31 источник – достаточно для ежедневного автопостинга
+# Если какой-то даёт ошибку – просто удалите его из списка
