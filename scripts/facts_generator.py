@@ -2,10 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-Facts Autopost (KIBER-style)
-
-Берёт статьи из facts_links_clean.txt, выжимает один яркий научный/исторический факт
-и постит в Telegram. Использует Groq с бюджетом и state-памятью по аналогии с No-code-protection.
+Facts Autopost (KIBER-style) — исправленная версия
+- Добавлены заголовки, retry, фильтр ссылок
+- Улучшена обработка ошибок
 """
 
 import os
@@ -22,9 +21,9 @@ from collections import Counter
 
 import aiohttp
 from bs4 import BeautifulSoup
-
 from groq import AsyncGroq
 
+# ===== Настройка логирования =====
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -32,11 +31,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("FactsBot")
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
+# ===== Переменные окружения =====
 def get_env(name: str) -> str:
     val = os.getenv(name)
     if not val:
-        logger.error(f"Missing env: {name}")
+        logger.error(f"❌ Missing env: {name}")
         raise SystemExit(1)
     return val
 
@@ -44,29 +45,30 @@ GROQ_API_KEY       = get_env("GROQ_API_KEY")
 TELEGRAM_BOT_TOKEN = get_env("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID         = get_env("CHANNEL_ID")
 
+# ===== Кеширование =====
 CACHE_DIR = os.getenv("CACHE_DIR", "cache_facts")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 STATE_FILE       = os.path.join(CACHE_DIR, "facts_state.json")
 GROQ_BUDGET_FILE = os.path.join(CACHE_DIR, "facts_groq_budget.json")
-
 FACTS_LINKS_FILE = "facts_links_clean.txt"
 
-HTTP_TIMEOUT            = aiohttp.ClientTimeout(total=25)
-TEXT_ONLY_THRESHOLD     = 700
+# ===== Настройки =====
+HTTP_TIMEOUT            = aiohttp.ClientTimeout(total=30)   # увеличено
 MAX_POSTS_PER_RUN       = 1
-MAX_ATTEMPTS            = 30  # Увеличено с 15
+MAX_ATTEMPTS            = 30
 
-RECENT_POSTS_CHECK          = 20  # Увеличено с 10
-RECENT_SIMILARITY_THRESHOLD = 0.35  # Снижено с 0.40
+RECENT_POSTS_CHECK          = 20
+RECENT_SIMILARITY_THRESHOLD = 0.35
 MIN_TOPIC_DIVERSITY         = 3
 
 MAX_ARTICLE_CHARS = 2500
 MIN_ARTICLE_CHARS = 300
 
 MAX_POST_LEN = 900
-MIN_POST_LEN = 250  # Снижено с 350
+MIN_POST_LEN = 250
 
+# ===== Модели Groq =====
 @dataclass
 class ModelConfig:
     name: str
@@ -80,6 +82,7 @@ MODELS = {
     "light": ModelConfig("llama-3.1-8b-instant",    rpm=30, tpm=20000, daily_tokens=500000, priority=2),
 }
 
+# ===== Бюджет Groq =====
 class GroqBudget:
     def __init__(self, path: str):
         self.state_file = path
@@ -151,6 +154,21 @@ class GroqBudget:
 budget      = GroqBudget(GROQ_BUDGET_FILE)
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 
+# ===== Проверка ключа Groq при старте =====
+async def check_groq_key():
+    """Проверяем, работает ли ключ, делая тестовый запрос."""
+    try:
+        resp = await groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=5,
+        )
+        logger.info("✅ Groq API key is valid")
+    except Exception as e:
+        logger.error(f"❌ Groq API key check failed: {e}")
+        raise SystemExit(1)
+
+# ===== Состояние (кеш постов) =====
 @dataclass
 class FactItem:
     url:   str
@@ -174,7 +192,7 @@ class FactsState:
             "posted_ids": [],
             "posts":      [],
             "topics":     [],
-            "posted_urls": [],  # Новое: список URL для проверки дубликатов
+            "posted_urls": [],
         }
 
     def save(self):
@@ -188,7 +206,6 @@ class FactsState:
         return uid in self.data["posted_ids"]
 
     def is_url_posted(self, url: str) -> bool:
-        """Проверка URL с нормализацией"""
         normalized = url.split('?')[0].split('#')[0].rstrip('/')
         for posted_url in self.data.get("posted_urls", []):
             if normalized == posted_url.split('?')[0].split('#')[0].rstrip('/'):
@@ -199,7 +216,6 @@ class FactsState:
         self.data["posted_ids"].append(uid)
         self.data["posted_ids"] = self.data["posted_ids"][-500:]
 
-        # Сохраняем URL
         normalized_url = url.split('?')[0].split('#')[0].rstrip('/')
         if "posted_urls" not in self.data:
             self.data["posted_urls"] = []
@@ -239,7 +255,7 @@ class FactsState:
         counts = Counter(recent)
         if len(counts) < MIN_TOPIC_DIVERSITY:
             topic, count = counts.most_common(1)[0]
-            if count >= RECENT_POSTS_CHECK * 0.5:  # Только если 50%+ постов одной темы
+            if count >= RECENT_POSTS_CHECK * 0.5:
                 logger.info(f"⚠️ Dominant topic '{topic}' in recent posts ({count})")
                 return topic
         return None
@@ -249,6 +265,7 @@ class FactsState:
 
 state = FactsState(STATE_FILE)
 
+# ===== Утилиты для сравнения текстов =====
 STOP_WORDS = {
     "что","это","как","для","или","при","так","все","они","был","она","его","её","он",
     "мы","вы","но","да","нет","уже","ещё","даже","если","тоже","есть","очень","ведь",
@@ -308,45 +325,20 @@ def extract_topic(text: str) -> str:
         return "nature"
     return "other"
 
+# ===== Бан-листы =====
 BANNED_PHRASES = [
-    "проливает новый свет",
-    "мы можем глубже понять эпоху",
-    "это открывает дискуссию",
-    "позволяет лучше понять наши корни",
-    "это важно для нашего благополучия",
-    "новые данные показывают",
-    "это поднимает важные вопросы",
-    "в наши дни это особенно актуально",
-    "в современном мире",
-    "как показывают исследования",
-    "это меняет картину",
-    "по-честному, это меняет картинку",
-    "это важно для нас всех",
-    "это заставляет задуматься о многом",
-    "это открывает новые горизонты",
-    "сложно переоценить важность",
-    "нельзя недооценивать",
-    "это касается каждого из нас",
-    "мы все сталкиваемся с этим",
-    "меняет наше понимание",
-    "загугли",
-    "если хочешь копнуть глубже",
-    "если хочешь узнать больше",
-    "узнай больше в интернете",
-    "копнуть глубже",
-    "начни интересоваться новостями",
-    "обращай внимание на открытия последних лет",
-    "следи за новостями",
-    "будь в курсе последних открытий",
-    "подписывайся",
-    "поделись с друзьями",
-    "расскажи друзьям",
-    "публикует исследования",
-    "освещает последние открытия",
-    "независимый журнал",
-    "делает науку доступной",
-    "теперь ты можешь",
-    "теперь любой может",
+    "проливает новый свет", "мы можем глубже понять эпоху", "это открывает дискуссию",
+    "позволяет лучше понять наши корни", "это важно для нашего благополучия",
+    "новые данные показывают", "это поднимает важные вопросы", "в наши дни это особенно актуально",
+    "в современном мире", "как показывают исследования", "это меняет картину",
+    "по-честному, это меняет картинку", "это важно для нас всех", "это заставляет задуматься о многом",
+    "это открывает новые горизонты", "сложно переоценить важность", "нельзя недооценивать",
+    "это касается каждого из нас", "мы все сталкиваемся с этим", "меняет наше понимание",
+    "загугли", "если хочешь копнуть глубже", "если хочешь узнать больше", "узнай больше в интернете",
+    "копнуть глубже", "начни интересоваться новостями", "обращай внимание на открытия последних лет",
+    "следи за новостями", "будь в курсе последних открытий", "подписывайся", "поделись с друзьями",
+    "расскажи друзьям", "публикует исследования", "освещает последние открытия",
+    "независимый журнал", "делает науку доступной", "теперь ты можешь", "теперь любой может",
     "был ли у тебя опыт",
 ]
 
@@ -385,45 +377,30 @@ def is_banned_topic(text: str) -> bool:
     return False
 
 def has_strong_fact(text: str) -> bool:
-    """СМЯГЧЁННАЯ валидация фактов"""
+    """СМЯГЧЁННАЯ валидация фактов (≥1 признак)"""
     t = text.lower()
-    
-    # Год или век
     has_year = bool(re.search(r"\b(1[0-9]{3}|20[0-9]{2})\b|веке|году", t))
-    
-    # Число/процент/измерение
     has_number = bool(re.search(
         r"\b\d+([.,]\d+)?\s*(км|метр|тонн|процент|%|раз|млн|млрд|тысяч|человек|лет|дней|часов|градус|мг|кг|литр)",
         t
     ))
-    
-    # Научные термины
     has_science = bool(re.search(
         r"(учёные|ученые|исследовател|исследование|открыли|обнаружили|доказали|эксперимент|анализ)",
         t, re.IGNORECASE
     ))
-    
-    # Уникальные явления
     has_unique = bool(re.search(
         r"(единственн|уникальн|редк|необычн|странн|удивительн|впервые|первый)",
         t, re.IGNORECASE
     ))
-    
-    # Глаголы действия (расширенный список)
     has_action = bool(re.search(
         r"(показал|выяснил|обнаружил|нашл|измерил|увеличил|снизил|зафиксировал|доказал|"
         r"установил|выявил|подтвердил|определил|может|способен|умеет|создает|производит|"
         r"достигает|превышает|содержит)",
         t, re.IGNORECASE
     ))
-    
     score = sum([has_year, has_number, has_science, has_unique, has_action])
-    
     logger.info(f"Fact strength: year={has_year}, num={has_number}, "
-                f"sci={has_science}, unique={has_unique}, action={has_action} "
-                f"(score: {score}/5)")
-    
-    # Требуем хотя бы 1 критерий из 5 (было: год И число И глагол)
+                f"sci={has_science}, unique={has_unique}, action={has_action} (score={score}/5)")
     return score >= 1
 
 def looks_like_announcement(text: str) -> bool:
@@ -431,7 +408,7 @@ def looks_like_announcement(text: str) -> bool:
         return True
     sentences = re.split(r"[.!?]+", text)
     sentences = [s.strip() for s in sentences if s.strip()]
-    if len(sentences) < 3:  # Снижено с 5
+    if len(sentences) < 3:
         return True
     return False
 
@@ -493,6 +470,7 @@ def generate_hashtags(post_text: str) -> str:
         uniq = uniq[:4]
     return " ".join(uniq)
 
+# ===== Загрузка ссылок =====
 def load_links() -> List[str]:
     if not os.path.exists(FACTS_LINKS_FILE):
         logger.error(f"No links file: {FACTS_LINKS_FILE}")
@@ -502,6 +480,10 @@ def load_links() -> List[str]:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
+                continue
+            # Пропускаем строки, которые не являются URL
+            if not line.startswith(("http://", "https://")):
+                logger.warning(f"⚠️ Skipping invalid URL (not http): {line}")
                 continue
             out.append(line)
     logger.info(f"📚 Loaded {len(out)} source links")
@@ -517,25 +499,50 @@ def is_root(url: str) -> bool:
     p = urlparse(url)
     return p.path in ("", "/") and not p.query and not p.fragment
 
-async def http_get(session: aiohttp.ClientSession, url: str) -> Optional[str]:
-    try:
-        async with session.get(url, timeout=HTTP_TIMEOUT) as resp:
-            if resp.status >= 400:
-                logger.info(f"HTTP {resp.status} for {url}")
-                return None
-            return await resp.text()
-    except Exception as e:
-        logger.info(f"HTTP error {url}: {e}")
-        return None
+# ===== HTTP с повторными попытками =====
+async def http_get_with_retry(session: aiohttp.ClientSession, url: str, retries: int = 3) -> Optional[str]:
+    """Выполняет GET с повторными попытками при ошибках 429, 5xx."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3",
+    }
+    for attempt in range(retries):
+        try:
+            async with session.get(url, headers=headers, timeout=HTTP_TIMEOUT) as resp:
+                if resp.status == 200:
+                    return await resp.text()
+                elif resp.status in (429, 500, 502, 503, 504):
+                    wait = (2 ** attempt) + random.random()
+                    logger.info(f"⏳ Retry {attempt+1}/{retries} for {url} after {wait:.1f}s (status {resp.status})")
+                    await asyncio.sleep(wait)
+                    continue
+                else:
+                    logger.info(f"HTTP {resp.status} for {url}")
+                    return None
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logger.info(f"Request error {url}: {e}, retry {attempt+1}")
+            await asyncio.sleep(2 ** attempt)
+    logger.info(f"❌ Failed to fetch {url} after {retries} attempts")
+    return None
 
+# ===== Извлечение текста =====
 def extract_article_text(html: str) -> str:
-    soup       = BeautifulSoup(html, "html.parser")
-    paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
-    text       = "\n".join(paragraphs)
+    soup = BeautifulSoup(html, "html.parser")
+    # Удаляем скрипты и стили
+    for script in soup(["script", "style", "nav", "footer", "header"]):
+        script.decompose()
+    paragraphs = []
+    for p in soup.find_all("p"):
+        text = p.get_text(" ", strip=True)
+        # Пропускаем слишком короткие параграфы (шум)
+        if len(text) > 30:
+            paragraphs.append(text)
+    text = "\n".join(paragraphs)
     return text[:MAX_ARTICLE_CHARS]
 
 def extract_article_links(base_url: str, html: str) -> List[str]:
-    soup  = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
     links = []
     for a in soup.find_all("a", href=True):
         href = a["href"]
@@ -543,23 +550,34 @@ def extract_article_links(base_url: str, html: str) -> List[str]:
             href = urljoin(base_url, href)
         if any(x in href for x in ["/article", "/news", "/story", "/202", "/post", "/science", "/history", "/space"]):
             links.append(href)
+    # Убираем дубликаты
     seen = set()
-    out  = []
+    out = []
     for l in links:
         if l not in seen:
             seen.add(l)
             out.append(l)
     return out[:20]
 
+# ===== Получение статьи из источника =====
 async def fetch_article_from_source(session: aiohttp.ClientSession, url: str) -> Optional[FactItem]:
+    # Блокировка запрещённых доменов
     if any(bad in url for bad in BANNED_DOMAINS):
         logger.info(f"Skip banned domain: {url}")
         return None
 
+    # Если URL не начинается с http – пропускаем (уже отфильтровано, но на всякий случай)
+    if not url.startswith(("http://", "https://")):
+        logger.info(f"Skip invalid URL: {url}")
+        return None
+
     logger.info(f"🌐 Fetch from {url}")
-    html = await http_get(session, url)
+    html = await http_get_with_retry(session, url)
     if not html:
         return None
+
+    # Добавляем небольшую задержку, чтобы не перегружать сайт
+    await asyncio.sleep(random.uniform(1.0, 3.0))
 
     if is_root(url):
         links = extract_article_links(url, html)
@@ -568,13 +586,12 @@ async def fetch_article_from_source(session: aiohttp.ClientSession, url: str) ->
             return None
         random.shuffle(links)
         for art in links:
-            # Проверка URL на дубликаты
             if state.is_url_posted(art):
                 continue
             uid = f"fact_{hash(art) & 0xffffffff:x}"
             if state.is_posted(uid):
                 continue
-            html2 = await http_get(session, art)
+            html2 = await http_get_with_retry(session, art)
             if not html2:
                 continue
             text = extract_article_text(html2)
@@ -592,6 +609,7 @@ async def fetch_article_from_source(session: aiohttp.ClientSession, url: str) ->
         uid = f"fact_{hash(url) & 0xffffffff:x}"
         return FactItem(url=url, title=url, text=text, uid=uid)
 
+# ===== Промпт для Groq =====
 FACT_PROMPT = """
 Ты пишешь пост для Telegram-канала «Что ты не знал».
 Задача — рассказать ОДИН яркий научный или исторический факт по-человечески.
@@ -641,6 +659,7 @@ FACT_PROMPT = """
 {article}
 """
 
+# ===== Вызов Groq =====
 async def call_groq_fact(item: FactItem) -> Optional[str]:
     model_key = "light" if budget.can_use_model("light") else "heavy"
     if not budget.can_use_model(model_key):
@@ -648,7 +667,6 @@ async def call_groq_fact(item: FactItem) -> Optional[str]:
         return None
 
     cfg = MODELS[model_key]
-
     await budget.wait_for_rate_limit(model_key)
 
     prompt = FACT_PROMPT.format(article=item.text)
@@ -657,7 +675,7 @@ async def call_groq_fact(item: FactItem) -> Optional[str]:
         resp = await groq_client.chat.completions.create(
             model=cfg.name,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=700,  # Увеличено с 600
+            max_tokens=700,
             temperature=0.9,
             top_p=0.9,
         )
@@ -670,6 +688,7 @@ async def call_groq_fact(item: FactItem) -> Optional[str]:
         logger.error(f"Groq error: {e}")
         return None
 
+# ===== Отправка в Telegram =====
 async def send_to_telegram(session: aiohttp.ClientSession, text: str, url: str):
     text = normalize_blank_lines(text).strip()
 
@@ -694,8 +713,12 @@ async def send_to_telegram(session: aiohttp.ClientSession, text: str, url: str):
     except Exception as e:
         logger.error(f"Telegram error: {e}")
 
+# ===== Главная функция =====
 async def main():
-    logger.info("🚀 Starting Facts Autopost")
+    logger.info("🚀 Starting Facts Autopost (fixed version)")
+
+    # Проверяем ключ Groq
+    await check_groq_key()
 
     links = load_links()
     if not links:
@@ -705,14 +728,13 @@ async def main():
 
     async with aiohttp.ClientSession() as session:
         items: List[FactItem] = []
-        
-        # Увеличено количество источников для парсинга
-        for url in links[:60]:  # Было 40
+
+        # Проходим по ссылкам, но не более 60
+        for url in links[:60]:
             item = await fetch_article_from_source(session, url)
             if item and not state.is_posted(item.uid):
                 items.append(item)
-            
-            # Останавливаемся, если набрали достаточно кандидатов
+
             if len(items) >= 30:
                 break
 
@@ -722,10 +744,11 @@ async def main():
             logger.info("No candidate facts")
             return
 
+        # Разнообразие топиков
         dominant = state.needs_diversity()
         if dominant:
             others = []
-            same   = []
+            same = []
             for it in items:
                 t = extract_topic(it.text)
                 if t == dominant:
@@ -737,10 +760,10 @@ async def main():
         else:
             random.shuffle(items)
 
-        posts_done         = 0
-        attempts           = 0
+        posts_done = 0
+        attempts = 0
         duplicates_skipped = 0
-        rejected           = 0
+        rejected = 0
 
         for it in items:
             if posts_done >= MAX_POSTS_PER_RUN:
