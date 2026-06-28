@@ -1,77 +1,31 @@
-# ОПТИМАЛЬНЫЙ СПИСОК 85+ ПРОВЕРЕННЫХ ИСТОЧНИКОВ 2026
-# ==========================
-
-# 🏆 ТОП-15 СТАБИЛЬНЫХ (0% ошибок 403/404)
-https://www.sciencealert.com/
-https://www.sciencedaily.com/
-https://www.phys.org/
-https://www.eurekalert.org/
-https://www.sciencenews.org/
-https://www.livescience.com/28170-25-fun-facts.html
-https://www.rd.com/list/interesting-facts
-https://www.bbcsciencefocus.com/science/fun-facts
-https://science.nasa.gov/
-https://www.smithsonianmag.com/category/world-history
-https://www.archaeology.org/news/
-https://www.mentalfloss.com/
-https://www.factretriever.com/
-https://www.cdc.gov/healthyweight/index.html
-https://postnauka.ru/
-
-Базовая наука / открытия
-https://www.newscientist.com/
-https://www.pnas.org/content/early/recent
-https://bigthink.com/
-https://www.psypost.org/
-https://www.worldhistory.org/articles/
-https://www.popularmechanics.com/science/
-https://www.treehugger.com/amazing-nature-facts-4857632
-https://www.zdnet.com/article/amazing-tech-facts-you-didnt-know
-
-Психология / привычки / мозг  
-https://jamesclear.com/habits
-https://jamesclear.com/three-steps-habit-change
-https://jamesclear.com/identity-based-habits
-https://greatergood.berkeley.edu/
-https://www.psychologytoday.com/intl/basics/habits
-https://www.bbc.com/future
 https://www.snexplores.org/
-https://www.mayoclinic.org/healthy-lifestyle/
-
-История / археология
-https://www.smithsonianmag.com/history/
-https://www.smithsonianmag.com/category/world-history
-https://www.archaeology.org/news/ancient-discoveries-2023
 https://www.historyextra.com/
-https://www.historytoday.com/
-https://www.boredpanda.com/weird-facts
-
-Странные факты
-https://bigthink.com/
-https://www.mentalfloss.com/
-https://www.factretriever.com/
-https://www.boredpanda.com/weird-facts
-https://www.parade.com/weird-facts
-
-Здоровье (научное)
-https://www.cdc.gov/healthyweight/index.html
-https://www.cdc.gov/nutrition/index.html
-https://www.mayoclinic.org/healthy-lifestyle/
-https://www.nih.gov/
-https://www.bmj.com/
-https://www.health.harvard.edu/blog
-https://www.who.int/news-room/fact-sheets/
-https://jamanetwork.com/
-
-Русскоязычный научпоп  
-https://postnauka.ru/
-https://elementy.ru/
-https://indicator.ru/
-https://naked-science.ru/
 https://cyberleninka.ru/
-
-# ==========================
-# КОНЕЦ СПИСКА  
-# ==========================
-# Всего источников: 85 (стабильно работают в GitHub Actions)
+https://www.health.harvard.edu/blog
+https://www.sciencealert.com/
+https://www.boredpanda.com/weird-facts
+https://www.smithsonianmag.com/category/world-history
+https://www.mentalfloss.com/
+https://www.smithsonianmag.com/history/
+https://www.archaeology.org/news/ancient-discoveries-2023
+https://www.newscientist.com/
+https://www.rd.com/list/interesting-facts
+https://greatergood.berkeley.edu/
+https://www.livescience.com/28170-25-fun-facts.html
+https://postnauka.ru/
+https://www.archaeology.org/news/
+https://www.bbc.com/future
+https://www.factretriever.com/
+https://www.historytoday.com/
+https://www.sciencedaily.com/
+https://jamesclear.com/identity-based-habits
+https://www.sciencenews.org/
+https://naked-science.ru/
+https://www.eurekalert.org/
+https://elementy.ru/
+https://jamesclear.com/three-steps-habit-change
+https://jamesclear.com/habits
+https://www.popularmechanics.com/science/
+https://www.worldhistory.org/articles/
+https://science.nasa.gov/
 
