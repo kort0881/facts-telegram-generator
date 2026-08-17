@@ -1,4 +1,5 @@
 name: Generate Facts
+
 on:
   schedule:
     - cron: "0 5,9,13,17,21 * * *"
@@ -12,7 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      GROQ_API_KEY:        ${{ secrets.GROQ_API_KEY }}
+      OPENAI_API_KEY:      ${{ secrets.GROQ_API_KEY }}   # используем старый ключ, если подходит
+      # OPENAI_BASE_URL:   ${{ secrets.OPENAI_BASE_URL }}
       TELEGRAM_BOT_TOKEN:  ${{ secrets.BOT_TOKEN }}
       CHANNEL_ID:          ${{ secrets.TG_CHAT_ID }}
 
@@ -34,12 +36,12 @@ jobs:
       - name: Prepare cache dir
         run: mkdir -p cache_facts
 
-      - name: List Python files  # Добавьте для дебага
-        run: find . -name "*.py" -ls
+      - name: Verify openai installed
+        run: python -c "import openai; print('openai version:', openai.__version__)"
 
       - name: Generate and post facts
         timeout-minutes: 10
-        run: python scripts/facts_generator.py  # ИСПРАВЛЕНИЕ: правильный путь
+        run: python scripts/facts_generator.py
 
       - name: Commit state
         run: |
