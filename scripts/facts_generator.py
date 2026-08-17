@@ -70,7 +70,7 @@ MIN_ARTICLE_CHARS = 300
 MAX_POST_LEN = 900
 MIN_POST_LEN = 250
 
-# ===== Модель (Groq gpt-oss-20b) =====
+# ===== Модель (Groq gpt-oss-120b) =====
 @dataclass
 class ModelConfig:
     name: str
@@ -81,8 +81,8 @@ class ModelConfig:
 
 MODELS = {
     "main": ModelConfig(
-        name="gpt-oss-120b",          # новая модель от Groq
-        rpm=30,                      # стандартный лимит для бесплатного тарифа
+        name="gpt-oss-120b",          # правильная модель
+        rpm=30,
         tpm=6000,
         daily_tokens=100000,
         priority=1
@@ -163,7 +163,7 @@ budget = GroqBudget(GROQ_BUDGET_FILE)
 # ===== Создаём клиент OpenAI (асинхронный) с указанием Groq endpoint =====
 openai_client = AsyncOpenAI(
     api_key=OPENAI_API_KEY,
-    base_url=OPENAI_BASE_URL,   # по умолчанию https://api.groq.com/openai/v1
+    base_url=OPENAI_BASE_URL,
 )
 
 # ===== Проверка ключа при старте =====
@@ -171,7 +171,7 @@ async def check_openai_key():
     """Проверяем, работает ли ключ и модель, делая тестовый запрос."""
     try:
         resp = await openai_client.chat.completions.create(
-            model="gpt-oss-20b",
+            model="gpt-oss-120b",   # исправлено
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=5,
         )
@@ -720,7 +720,7 @@ async def send_to_telegram(session: aiohttp.ClientSession, text: str, url: str):
 
 # ===== Главная функция =====
 async def main():
-    logger.info("🚀 Starting Facts Autopost (Groq gpt-oss-20b)")
+    logger.info("🚀 Starting Facts Autopost (Groq gpt-oss-120b)")
 
     await check_openai_key()
 
