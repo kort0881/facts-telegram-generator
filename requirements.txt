@@ -2,4 +2,4 @@ requests
 pyyaml
 beautifulsoup4
 aiohttp
-groq
+openai>=1.0.0
