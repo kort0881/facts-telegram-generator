@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-Facts Autopost (KIBER-style) — адаптировано под OpenAI‑совместимый API
-- Используется модель openai/gpt-oss-120b
-- Клиент OpenAI (AsyncOpenAI) вместо Groq
+Facts Autopost (KIBER-style) — адаптировано под Groq OpenAI‑совместимый API
+- Используется модель gpt-oss-20b через Groq
+- Клиент OpenAI (AsyncOpenAI) с base_url = https://api.groq.com/openai/v1
 - Бюджет упрощён (одна модель)
 """
 
@@ -22,7 +22,7 @@ from collections import Counter
 
 import aiohttp
 from bs4 import BeautifulSoup
-from openai import AsyncOpenAI  # <--- заменили
+from openai import AsyncOpenAI
 
 # ===== Настройка логирования =====
 logging.basicConfig(
@@ -42,8 +42,8 @@ def get_env(name: str) -> str:
         raise SystemExit(1)
     return val
 
-OPENAI_API_KEY = get_env("OPENAI_API_KEY")          # теперь API‑ключ OpenAI (или для совместимого эндпоинта)
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")     # опционально, если нужен нестандартный URL
+OPENAI_API_KEY = get_env("OPENAI_API_KEY")          # ваш Groq API ключ (gsk_...)
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.groq.com/openai/v1")  # по умолчанию Groq
 TELEGRAM_BOT_TOKEN = get_env("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = get_env("CHANNEL_ID")
 
@@ -52,7 +52,7 @@ CACHE_DIR = os.getenv("CACHE_DIR", "cache_facts")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 STATE_FILE       = os.path.join(CACHE_DIR, "facts_state.json")
-GROQ_BUDGET_FILE = os.path.join(CACHE_DIR, "facts_groq_budget.json")  # имя оставим, но бюджет переработан
+GROQ_BUDGET_FILE = os.path.join(CACHE_DIR, "facts_groq_budget.json")
 FACTS_LINKS_FILE = "facts_links_clean.txt"
 
 # ===== Настройки =====
@@ -70,7 +70,7 @@ MIN_ARTICLE_CHARS = 300
 MAX_POST_LEN = 900
 MIN_POST_LEN = 250
 
-# ===== Модель (одна, так как используем openai/gpt-oss-120b) =====
+# ===== Модель (Groq gpt-oss-20b) =====
 @dataclass
 class ModelConfig:
     name: str
@@ -81,15 +81,15 @@ class ModelConfig:
 
 MODELS = {
     "main": ModelConfig(
-        name="openai/gpt-oss-120b",
-        rpm=30,               # можно подстроить под свои лимиты
-        tpm=20000,
-        daily_tokens=500000,
+        name="gpt-oss-20b",          # новая модель от Groq
+        rpm=30,                      # стандартный лимит для бесплатного тарифа
+        tpm=6000,
+        daily_tokens=100000,
         priority=1
     ),
 }
 
-# ===== Бюджет (упрощён, но оставлен для совместимости) =====
+# ===== Бюджет =====
 class GroqBudget:
     def __init__(self, path: str):
         self.state_file = path
@@ -160,10 +160,10 @@ class GroqBudget:
 
 budget = GroqBudget(GROQ_BUDGET_FILE)
 
-# ===== Создаём клиент OpenAI (асинхронный) =====
+# ===== Создаём клиент OpenAI (асинхронный) с указанием Groq endpoint =====
 openai_client = AsyncOpenAI(
     api_key=OPENAI_API_KEY,
-    base_url=OPENAI_BASE_URL,   # если None – использует стандартный OpenAI
+    base_url=OPENAI_BASE_URL,   # по умолчанию https://api.groq.com/openai/v1
 )
 
 # ===== Проверка ключа при старте =====
@@ -171,7 +171,7 @@ async def check_openai_key():
     """Проверяем, работает ли ключ и модель, делая тестовый запрос."""
     try:
         resp = await openai_client.chat.completions.create(
-            model="openai/gpt-oss-120b",
+            model="gpt-oss-20b",
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=5,
         )
@@ -666,7 +666,7 @@ FACT_PROMPT = """
 
 # ===== Вызов OpenAI =====
 async def call_openai_fact(item: FactItem) -> Optional[str]:
-    model_key = "main"  # используем единственную модель
+    model_key = "main"
     if not budget.can_use_model(model_key):
         logger.warning("⚠️ Budget exhausted")
         return None
@@ -720,7 +720,7 @@ async def send_to_telegram(session: aiohttp.ClientSession, text: str, url: str):
 
 # ===== Главная функция =====
 async def main():
-    logger.info("🚀 Starting Facts Autopost (OpenAI version)")
+    logger.info("🚀 Starting Facts Autopost (Groq gpt-oss-20b)")
 
     await check_openai_key()
 
