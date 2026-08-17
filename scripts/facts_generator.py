@@ -2,9 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-Facts Autopost (KIBER-style) — исправленная версия
-- Добавлены заголовки, retry, фильтр ссылок
-- Улучшена обработка ошибок
+Facts Autopost (KIBER-style) — адаптировано под OpenAI‑совместимый API
+- Используется модель openai/gpt-oss-120b
+- Клиент OpenAI (AsyncOpenAI) вместо Groq
+- Бюджет упрощён (одна модель)
 """
 
 import os
@@ -21,7 +22,7 @@ from collections import Counter
 
 import aiohttp
 from bs4 import BeautifulSoup
-from groq import AsyncGroq
+from openai import AsyncOpenAI  # <--- заменили
 
 # ===== Настройка логирования =====
 logging.basicConfig(
@@ -41,20 +42,21 @@ def get_env(name: str) -> str:
         raise SystemExit(1)
     return val
 
-GROQ_API_KEY       = get_env("GROQ_API_KEY")
+OPENAI_API_KEY = get_env("OPENAI_API_KEY")          # теперь API‑ключ OpenAI (или для совместимого эндпоинта)
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")     # опционально, если нужен нестандартный URL
 TELEGRAM_BOT_TOKEN = get_env("TELEGRAM_BOT_TOKEN")
-CHANNEL_ID         = get_env("CHANNEL_ID")
+CHANNEL_ID = get_env("CHANNEL_ID")
 
 # ===== Кеширование =====
 CACHE_DIR = os.getenv("CACHE_DIR", "cache_facts")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 STATE_FILE       = os.path.join(CACHE_DIR, "facts_state.json")
-GROQ_BUDGET_FILE = os.path.join(CACHE_DIR, "facts_groq_budget.json")
+GROQ_BUDGET_FILE = os.path.join(CACHE_DIR, "facts_groq_budget.json")  # имя оставим, но бюджет переработан
 FACTS_LINKS_FILE = "facts_links_clean.txt"
 
 # ===== Настройки =====
-HTTP_TIMEOUT            = aiohttp.ClientTimeout(total=30)   # увеличено
+HTTP_TIMEOUT            = aiohttp.ClientTimeout(total=30)
 MAX_POSTS_PER_RUN       = 1
 MAX_ATTEMPTS            = 30
 
@@ -68,7 +70,7 @@ MIN_ARTICLE_CHARS = 300
 MAX_POST_LEN = 900
 MIN_POST_LEN = 250
 
-# ===== Модели Groq =====
+# ===== Модель (одна, так как используем openai/gpt-oss-120b) =====
 @dataclass
 class ModelConfig:
     name: str
@@ -78,11 +80,16 @@ class ModelConfig:
     priority: int
 
 MODELS = {
-    "heavy": ModelConfig("llama-3.3-70b-versatile", rpm=30, tpm=6000,  daily_tokens=100000, priority=1),
-    "light": ModelConfig("llama-3.1-8b-instant",    rpm=30, tpm=20000, daily_tokens=500000, priority=2),
+    "main": ModelConfig(
+        name="openai/gpt-oss-120b",
+        rpm=30,               # можно подстроить под свои лимиты
+        tpm=20000,
+        daily_tokens=500000,
+        priority=1
+    ),
 }
 
-# ===== Бюджет Groq =====
+# ===== Бюджет (упрощён, но оставлен для совместимости) =====
 class GroqBudget:
     def __init__(self, path: str):
         self.state_file = path
@@ -101,7 +108,7 @@ class GroqBudget:
                 with open(self.state_file, "r", encoding="utf-8") as f:
                     saved = json.load(f)
                     if saved.get("last_reset") != time.strftime("%Y-%m-%d"):
-                        logger.info("🔄 New day — reset Groq limits")
+                        logger.info("🔄 New day — reset limits")
                         saved["daily_tokens"] = {}
                         saved["last_reset"]   = time.strftime("%Y-%m-%d")
                     default.update(saved)
@@ -151,21 +158,26 @@ class GroqBudget:
         self.data["last_request_time"][model] = time.time()
         self.save()
 
-budget      = GroqBudget(GROQ_BUDGET_FILE)
-groq_client = AsyncGroq(api_key=GROQ_API_KEY)
+budget = GroqBudget(GROQ_BUDGET_FILE)
 
-# ===== Проверка ключа Groq при старте =====
-async def check_groq_key():
-    """Проверяем, работает ли ключ, делая тестовый запрос."""
+# ===== Создаём клиент OpenAI (асинхронный) =====
+openai_client = AsyncOpenAI(
+    api_key=OPENAI_API_KEY,
+    base_url=OPENAI_BASE_URL,   # если None – использует стандартный OpenAI
+)
+
+# ===== Проверка ключа при старте =====
+async def check_openai_key():
+    """Проверяем, работает ли ключ и модель, делая тестовый запрос."""
     try:
-        resp = await groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+        resp = await openai_client.chat.completions.create(
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=5,
         )
-        logger.info("✅ Groq API key is valid")
+        logger.info("✅ OpenAI API key and model are valid")
     except Exception as e:
-        logger.error(f"❌ Groq API key check failed: {e}")
+        logger.error(f"❌ OpenAI API key check failed: {e}")
         raise SystemExit(1)
 
 # ===== Состояние (кеш постов) =====
@@ -481,7 +493,6 @@ def load_links() -> List[str]:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            # Пропускаем строки, которые не являются URL
             if not line.startswith(("http://", "https://")):
                 logger.warning(f"⚠️ Skipping invalid URL (not http): {line}")
                 continue
@@ -529,13 +540,11 @@ async def http_get_with_retry(session: aiohttp.ClientSession, url: str, retries:
 # ===== Извлечение текста =====
 def extract_article_text(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
-    # Удаляем скрипты и стили
     for script in soup(["script", "style", "nav", "footer", "header"]):
         script.decompose()
     paragraphs = []
     for p in soup.find_all("p"):
         text = p.get_text(" ", strip=True)
-        # Пропускаем слишком короткие параграфы (шум)
         if len(text) > 30:
             paragraphs.append(text)
     text = "\n".join(paragraphs)
@@ -550,7 +559,6 @@ def extract_article_links(base_url: str, html: str) -> List[str]:
             href = urljoin(base_url, href)
         if any(x in href for x in ["/article", "/news", "/story", "/202", "/post", "/science", "/history", "/space"]):
             links.append(href)
-    # Убираем дубликаты
     seen = set()
     out = []
     for l in links:
@@ -561,12 +569,10 @@ def extract_article_links(base_url: str, html: str) -> List[str]:
 
 # ===== Получение статьи из источника =====
 async def fetch_article_from_source(session: aiohttp.ClientSession, url: str) -> Optional[FactItem]:
-    # Блокировка запрещённых доменов
     if any(bad in url for bad in BANNED_DOMAINS):
         logger.info(f"Skip banned domain: {url}")
         return None
 
-    # Если URL не начинается с http – пропускаем (уже отфильтровано, но на всякий случай)
     if not url.startswith(("http://", "https://")):
         logger.info(f"Skip invalid URL: {url}")
         return None
@@ -576,7 +582,6 @@ async def fetch_article_from_source(session: aiohttp.ClientSession, url: str) ->
     if not html:
         return None
 
-    # Добавляем небольшую задержку, чтобы не перегружать сайт
     await asyncio.sleep(random.uniform(1.0, 3.0))
 
     if is_root(url):
@@ -609,7 +614,7 @@ async def fetch_article_from_source(session: aiohttp.ClientSession, url: str) ->
         uid = f"fact_{hash(url) & 0xffffffff:x}"
         return FactItem(url=url, title=url, text=text, uid=uid)
 
-# ===== Промпт для Groq =====
+# ===== Промпт для OpenAI =====
 FACT_PROMPT = """
 Ты пишешь пост для Telegram-канала «Что ты не знал».
 Задача — рассказать ОДИН яркий научный или исторический факт по-человечески.
@@ -659,11 +664,11 @@ FACT_PROMPT = """
 {article}
 """
 
-# ===== Вызов Groq =====
-async def call_groq_fact(item: FactItem) -> Optional[str]:
-    model_key = "light" if budget.can_use_model("light") else "heavy"
+# ===== Вызов OpenAI =====
+async def call_openai_fact(item: FactItem) -> Optional[str]:
+    model_key = "main"  # используем единственную модель
     if not budget.can_use_model(model_key):
-        logger.warning("⚠️ Groq budget exhausted")
+        logger.warning("⚠️ Budget exhausted")
         return None
 
     cfg = MODELS[model_key]
@@ -672,7 +677,7 @@ async def call_groq_fact(item: FactItem) -> Optional[str]:
     prompt = FACT_PROMPT.format(article=item.text)
 
     try:
-        resp = await groq_client.chat.completions.create(
+        resp = await openai_client.chat.completions.create(
             model=cfg.name,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=700,
@@ -685,7 +690,7 @@ async def call_groq_fact(item: FactItem) -> Optional[str]:
         budget.add_tokens(cfg.name, tokens)
         return content
     except Exception as e:
-        logger.error(f"Groq error: {e}")
+        logger.error(f"OpenAI error: {e}")
         return None
 
 # ===== Отправка в Telegram =====
@@ -715,10 +720,9 @@ async def send_to_telegram(session: aiohttp.ClientSession, text: str, url: str):
 
 # ===== Главная функция =====
 async def main():
-    logger.info("🚀 Starting Facts Autopost (fixed version)")
+    logger.info("🚀 Starting Facts Autopost (OpenAI version)")
 
-    # Проверяем ключ Groq
-    await check_groq_key()
+    await check_openai_key()
 
     links = load_links()
     if not links:
@@ -729,7 +733,6 @@ async def main():
     async with aiohttp.ClientSession() as session:
         items: List[FactItem] = []
 
-        # Проходим по ссылкам, но не более 60
         for url in links[:60]:
             item = await fetch_article_from_source(session, url)
             if item and not state.is_posted(item.uid):
@@ -744,7 +747,6 @@ async def main():
             logger.info("No candidate facts")
             return
 
-        # Разнообразие топиков
         dominant = state.needs_diversity()
         if dominant:
             others = []
@@ -787,7 +789,7 @@ async def main():
                 duplicates_skipped += 1
                 continue
 
-            post_text = await call_groq_fact(it)
+            post_text = await call_openai_fact(it)
             if not post_text:
                 topic = extract_topic(it.text)
                 state.mark_posted(it.uid, it.url, it.title, it.text, topic)
