@@ -3,7 +3,7 @@
 
 """
 Facts Autopost (KIBER-style) — адаптировано под Groq OpenAI‑совместимый API
-- Используется модель gpt-oss-120b через Groq
+- Используется модель openai/gpt-oss-120b через Groq
 - Клиент OpenAI (AsyncOpenAI) с base_url = https://api.groq.com/openai/v1
 - Бюджет упрощён (одна модель)
 """
@@ -43,7 +43,7 @@ def get_env(name: str) -> str:
     return val
 
 OPENAI_API_KEY = get_env("OPENAI_API_KEY")          # ваш Groq API ключ (gsk_...)
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.groq.com/openai/v1")  # по умолчанию Groq
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.groq.com/openai/v1")
 TELEGRAM_BOT_TOKEN = get_env("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = get_env("CHANNEL_ID")
 
@@ -70,7 +70,7 @@ MIN_ARTICLE_CHARS = 300
 MAX_POST_LEN = 900
 MIN_POST_LEN = 250
 
-# ===== Модель (Groq gpt-oss-120b) =====
+# ===== Модель (Groq openai/gpt-oss-120b) =====
 @dataclass
 class ModelConfig:
     name: str
@@ -81,7 +81,7 @@ class ModelConfig:
 
 MODELS = {
     "main": ModelConfig(
-        name="gpt-oss-120b",          # правильная модель
+        name="openai/gpt-oss-120b",          # ✅ правильное имя с префиксом
         rpm=30,
         tpm=6000,
         daily_tokens=100000,
@@ -171,7 +171,7 @@ async def check_openai_key():
     """Проверяем, работает ли ключ и модель, делая тестовый запрос."""
     try:
         resp = await openai_client.chat.completions.create(
-            model="gpt-oss-120b",   # исправлено
+            model="openai/gpt-oss-120b",   # ✅ исправлено
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=5,
         )
@@ -720,7 +720,7 @@ async def send_to_telegram(session: aiohttp.ClientSession, text: str, url: str):
 
 # ===== Главная функция =====
 async def main():
-    logger.info("🚀 Starting Facts Autopost (Groq gpt-oss-120b)")
+    logger.info("🚀 Starting Facts Autopost (Groq openai/gpt-oss-120b)")
 
     await check_openai_key()
 
