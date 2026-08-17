@@ -3,7 +3,7 @@
 
 """
 Facts Autopost (KIBER-style) — адаптировано под Groq OpenAI‑совместимый API
-- Используется модель gpt-oss-20b через Groq
+- Используется модель gpt-oss-120b через Groq
 - Клиент OpenAI (AsyncOpenAI) с base_url = https://api.groq.com/openai/v1
 - Бюджет упрощён (одна модель)
 """
@@ -81,7 +81,7 @@ class ModelConfig:
 
 MODELS = {
     "main": ModelConfig(
-        name="gpt-oss-20b",          # новая модель от Groq
+        name="gpt-oss-120b",          # новая модель от Groq
         rpm=30,                      # стандартный лимит для бесплатного тарифа
         tpm=6000,
         daily_tokens=100000,
