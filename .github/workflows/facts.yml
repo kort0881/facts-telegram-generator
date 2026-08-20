@@ -13,8 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      OPENAI_API_KEY:      ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL:     "https://api.groq.com/openai/v1"
+      GROQ_API_KEY:        ${{ secrets.GROQ_API_KEY }}   # <-- исправлено
       TELEGRAM_BOT_TOKEN:  ${{ secrets.BOT_TOKEN }}
       CHANNEL_ID:          ${{ secrets.TG_CHAT_ID }}
 
@@ -36,8 +35,9 @@ jobs:
       - name: Prepare cache dir
         run: mkdir -p cache_facts
 
-      - name: Verify openai installed
-        run: python -c "import openai; print('openai version:', openai.__version__)"
+      # === Шаг проверки заменён на groq ===
+      - name: Verify groq installed
+        run: python -c "import groq; print('groq version:', groq.__version__)"
 
       - name: Generate and post facts
         timeout-minutes: 10
