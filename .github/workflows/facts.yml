@@ -2,7 +2,12 @@ name: Generate Facts
 
 on:
   schedule:
-    - cron: "0 5,9,13,17,21 * * *"
+    # 05:47 UTC = 08:47 МСК
+    # 09:47 UTC = 12:47 МСК
+    # 13:47 UTC = 16:47 МСК
+    # 17:47 UTC = 20:47 МСК
+    # 21:47 UTC = 00:47 МСК (след. дня)
+    - cron: "47 5,9,13,17,21 * * *"
   workflow_dispatch:
 
 permissions:
@@ -13,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      GROQ_API_KEY:        ${{ secrets.GROQ_API_KEY }}   # <-- исправлено
+      GROQ_API_KEY:        ${{ secrets.GROQ_API_KEY }}
       TELEGRAM_BOT_TOKEN:  ${{ secrets.BOT_TOKEN }}
       CHANNEL_ID:          ${{ secrets.TG_CHAT_ID }}
 
