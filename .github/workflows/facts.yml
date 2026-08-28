@@ -2,12 +2,9 @@ name: Generate Facts
 
 on:
   schedule:
-    # 05:47 UTC = 08:47 МСК
-    # 09:47 UTC = 12:47 МСК
-    # 13:47 UTC = 16:47 МСК
-    # 17:47 UTC = 20:47 МСК
-    # 21:47 UTC = 00:47 МСК (след. дня)
-    - cron: "47 5,9,13,17,21 * * *"
+    # Московское время: 08:15, 12:15, 16:15, 20:15, 00:15 (след. дня)
+    # UTC: 5:15, 9:15, 13:15, 17:15, 21:15
+    - cron: "15 5,9,13,17,21 * * *"
   workflow_dispatch:
 
 permissions:
@@ -40,7 +37,6 @@ jobs:
       - name: Prepare cache dir
         run: mkdir -p cache_facts
 
-      # === Шаг проверки заменён на groq ===
       - name: Verify groq installed
         run: python -c "import groq; print('groq version:', groq.__version__)"
 
