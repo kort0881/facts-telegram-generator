@@ -17,6 +17,8 @@ jobs:
       GROQ_API_KEY:        ${{ secrets.GROQ_API_KEY }}
       TELEGRAM_BOT_TOKEN:  ${{ secrets.BOT_TOKEN }}
       CHANNEL_ID:          ${{ secrets.TG_CHAT_ID }}
+      VK_TOKEN:            ${{ secrets.VK_TOKEN }}
+      VK_GROUP_ID:         ${{ secrets.VK_GROUP_ID }}
 
     steps:
       - name: Checkout repo
