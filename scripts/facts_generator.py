@@ -3,9 +3,9 @@
 
 """
 Facts Autopost (KIBER-style) — адаптировано под оригинальный Groq API
-- Используется модель openai/gpt-oss-120b (доступна через Groq)
++ публикация в Telegram и ВКонтакте
+- Модель openai/gpt-oss-120b (доступна через Groq)
 - Клиент Groq (синхронный, вызывается через asyncio.to_thread)
-- Бюджет упрощён (одна модель)
 """
 
 import os
@@ -22,7 +22,7 @@ from collections import Counter
 
 import aiohttp
 from bs4 import BeautifulSoup
-from groq import Groq   # <--- заменили
+from groq import Groq
 
 # ===== Настройка логирования =====
 logging.basicConfig(
@@ -42,9 +42,21 @@ def get_env(name: str) -> str:
         raise SystemExit(1)
     return val
 
-GROQ_API_KEY = get_env("GROQ_API_KEY")          # ваш Groq API ключ (gsk_...)
+GROQ_API_KEY       = get_env("GROQ_API_KEY")
 TELEGRAM_BOT_TOKEN = get_env("TELEGRAM_BOT_TOKEN")
-CHANNEL_ID = get_env("CHANNEL_ID")
+CHANNEL_ID         = get_env("CHANNEL_ID")
+
+# === НОВОЕ ДЛЯ ВК: опциональные переменные ===
+VK_TOKEN    = os.getenv("VK_TOKEN", "").strip()
+VK_GROUP_ID = os.getenv("VK_GROUP_ID", "").strip()
+
+if VK_TOKEN and VK_GROUP_ID:
+    if not VK_GROUP_ID.startswith("-"):
+        VK_GROUP_ID = f"-{VK_GROUP_ID}"
+    logger.info(f"✅ VK enabled for group {VK_GROUP_ID}")
+else:
+    logger.info("ℹ️ VK disabled (VK_TOKEN / VK_GROUP_ID not set)")
+# === /НОВОЕ ДЛЯ ВК ===
 
 # ===== Кеширование =====
 CACHE_DIR = os.getenv("CACHE_DIR", "cache_facts")
@@ -69,7 +81,7 @@ MIN_ARTICLE_CHARS = 300
 MAX_POST_LEN = 900
 MIN_POST_LEN = 250
 
-# ===== Модель (одна, через Groq) =====
+# ===== Модель =====
 @dataclass
 class ModelConfig:
     name: str
@@ -80,7 +92,7 @@ class ModelConfig:
 
 MODELS = {
     "main": ModelConfig(
-        name="openai/gpt-oss-120b",          # доступна через Groq
+        name="openai/gpt-oss-120b",
         rpm=30,
         tpm=6000,
         daily_tokens=100000,
@@ -88,7 +100,7 @@ MODELS = {
     ),
 }
 
-# ===== Бюджет (без изменений) =====
+# ===== Бюджет =====
 class GroqBudget:
     def __init__(self, path: str):
         self.state_file = path
@@ -158,15 +170,11 @@ class GroqBudget:
         self.save()
 
 budget = GroqBudget(GROQ_BUDGET_FILE)
-
-# ===== Создаём клиент Groq (синхронный) =====
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# ===== Проверка ключа при старте =====
 async def check_groq_key():
-    """Проверяем, работает ли ключ и модель, делая тестовый запрос."""
     try:
-        resp = await asyncio.to_thread(
+        await asyncio.to_thread(
             lambda: groq_client.chat.completions.create(
                 model="openai/gpt-oss-120b",
                 messages=[{"role": "user", "content": "ping"}],
@@ -178,7 +186,7 @@ async def check_groq_key():
         logger.error(f"❌ Groq API key check failed: {e}")
         raise SystemExit(1)
 
-# ===== Состояние (кеш постов) =====
+# ===== Состояние =====
 @dataclass
 class FactItem:
     url:   str
@@ -716,9 +724,49 @@ async def send_to_telegram(session: aiohttp.ClientSession, text: str, url: str):
     except Exception as e:
         logger.error(f"Telegram error: {e}")
 
+# === НОВОЕ ДЛЯ ВК: функция публикации в группу ===
+async def send_to_vk(session: aiohttp.ClientSession, text: str, url: str):
+    if not VK_TOKEN or not VK_GROUP_ID:
+        return
+
+    text = normalize_blank_lines(text).strip()
+
+    auto_tags = generate_hashtags(text)
+    if auto_tags:
+        full = f"{text}\n\n{auto_tags}\n\nИсточник: {url}"
+    else:
+        full = f"{text}\n\nИсточник: {url}"
+
+    # у wall.post лимит ~16000 символов, оставим запас
+    if len(full) > 15000:
+        full = full[:15000]
+
+    api_url = "https://api.vk.com/method/wall.post"
+    payload = {
+        "owner_id":     VK_GROUP_ID,
+        "from_group":   1,
+        "message":      full,
+        "access_token": VK_TOKEN,
+        "v":            "5.199",
+    }
+    try:
+        async with session.post(api_url, data=payload, timeout=HTTP_TIMEOUT) as resp:
+            data = await resp.json(content_type=None)
+            if "error" in data:
+                logger.error(
+                    f"VK error {data['error'].get('error_code')}: "
+                    f"{data['error'].get('error_msg')}"
+                )
+            else:
+                post_id = data.get("response", {}).get("post_id")
+                logger.info(f"✅ Posted to VK (post_id={post_id})")
+    except Exception as e:
+        logger.error(f"VK request error: {e}")
+# === /НОВОЕ ДЛЯ ВК ===
+
 # ===== Главная функция =====
 async def main():
-    logger.info("🚀 Starting Facts Autopost (Groq SDK, model openai/gpt-oss-120b)")
+    logger.info("🚀 Starting Facts Autopost (Groq + Telegram + VK)")
 
     await check_groq_key()
 
@@ -849,7 +897,11 @@ async def main():
                 rejected += 1
                 continue
 
+            # === НОВОЕ ДЛЯ ВК: постим в оба сервиса ===
             await send_to_telegram(session, post_text, it.url)
+            await send_to_vk(session, post_text, it.url)
+            # === /НОВОЕ ДЛЯ ВК ===
+
             topic = extract_topic(it.text)
             state.mark_posted(it.uid, it.url, it.title, it.text, topic)
             posts_done += 1
