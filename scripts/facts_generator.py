@@ -6,6 +6,17 @@ Facts Autopost (KIBER-style) — адаптировано под оригина�
 + публикация в Telegram и ВКонтакте
 - Модель openai/gpt-oss-120b (доступна через Groq)
 - Клиент Groq (синхронный, вызывается через asyncio.to_thread)
+
+ИСПРАВЛЕНО (обрезка постов на полуслове):
+- max_tokens увеличен: gpt-oss — reasoning-модель, её рассуждения съедают
+  лимит токенов, и видимый ответ обрывался. Добавлен reasoning_effort="low".
+- Проверяется finish_reason: ответ, оборванный по лимиту ("length"),
+  больше не публикуется — делается повтор с бОльшим лимитом.
+- Слишком длинный пост сначала просим модель сократить, а не режем.
+- smart_clip режет только по концу предложения и никогда по середине слова;
+  если корректно обрезать нельзя — пост пропускается.
+- Перед публикацией проверяется, что пост заканчивается законченной фразой.
+- uid статьи считается через md5 (hash() в Python меняется между запусками).
 """
 
 import os
@@ -14,7 +25,9 @@ import asyncio
 import random
 import re
 import time
+import hashlib
 import logging
+import unicodedata
 from dataclasses import dataclass
 from typing import Optional, List, Set, Tuple
 from urllib.parse import urlparse, urljoin
@@ -46,7 +59,7 @@ GROQ_API_KEY       = get_env("GROQ_API_KEY")
 TELEGRAM_BOT_TOKEN = get_env("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID         = get_env("CHANNEL_ID")
 
-# === НОВОЕ ДЛЯ ВК: опциональные переменные ===
+# === ВК: опциональные переменные ===
 VK_TOKEN    = os.getenv("VK_TOKEN", "").strip()
 VK_GROUP_ID = os.getenv("VK_GROUP_ID", "").strip()
 
@@ -56,7 +69,6 @@ if VK_TOKEN and VK_GROUP_ID:
     logger.info(f"✅ VK enabled for group {VK_GROUP_ID}")
 else:
     logger.info("ℹ️ VK disabled (VK_TOKEN / VK_GROUP_ID not set)")
-# === /НОВОЕ ДЛЯ ВК ===
 
 # ===== Кеширование =====
 CACHE_DIR = os.getenv("CACHE_DIR", "cache_facts")
@@ -80,6 +92,12 @@ MIN_ARTICLE_CHARS = 300
 
 MAX_POST_LEN = 900
 MIN_POST_LEN = 250
+
+# Лимиты токенов на ответ. Для reasoning-модели сюда входят и рассуждения,
+# поэтому 700 было слишком мало — текст обрывался.
+GEN_MAX_TOKENS_STEPS = [2000, 4000]   # первая попытка, повтор при обрыве
+SHORTEN_MAX_TOKENS   = 2000
+REASONING_EFFORT     = "low"          # low / medium / high
 
 # ===== Модель =====
 @dataclass
@@ -178,7 +196,7 @@ async def check_groq_key():
             lambda: groq_client.chat.completions.create(
                 model="openai/gpt-oss-120b",
                 messages=[{"role": "user", "content": "ping"}],
-                max_tokens=5,
+                max_tokens=50,
             )
         )
         logger.info("✅ Groq API key and model are valid")
@@ -193,6 +211,11 @@ class FactItem:
     title: str
     text:  str
     uid:   str
+
+def make_uid(url: str) -> str:
+    # hash() в Python рандомизирован между запусками, md5 — стабилен
+    normalized = url.split('?')[0].split('#')[0].rstrip('/')
+    return "fact_" + hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
 
 class FactsState:
     def __init__(self, path: str):
@@ -434,19 +457,58 @@ def normalize_blank_lines(text: str) -> str:
     lines = [l.rstrip() for l in text.split("\n")]
     return "\n".join(lines)
 
-def smart_clip(post: str, limit: int = MAX_POST_LEN, min_cut: int = 400) -> str:
+# ===== Законченность текста и аккуратная обрезка =====
+# Конец предложения: . ! ? … (возможно несколько) + закрывающие кавычки/скобки
+SENT_END_RE = re.compile(r"[.!?…]+[»\"')]*")
+END_CHARS = set(".!?…»\")")
+
+def _strip_trailing_decor(text: str) -> str:
+    """Убирает хвостовые эмодзи, символы, пробелы и служебные юникод-символы."""
+    s = text.rstrip()
+    while s:
+        cat = unicodedata.category(s[-1])
+        if s[-1].isspace() or cat[0] in ("S", "C") or cat == "Mn":
+            s = s[:-1]
+        else:
+            break
+    return s
+
+def is_complete_ending(text: str) -> bool:
+    """True, если текст заканчивается законченной фразой (с учётом эмодзи в конце)."""
+    s = _strip_trailing_decor(text)
+    return bool(s) and s[-1] in END_CHARS
+
+def _sentence_ends(text: str) -> List[int]:
+    """Позиции концов предложений. Точка в «3.5» концом не считается."""
+    ends = []
+    for m in SENT_END_RE.finditer(text):
+        e = m.end()
+        if e == len(text) or text[e].isspace():
+            ends.append(e)
+    return ends
+
+def smart_clip(post: str, limit: int = MAX_POST_LEN, min_cut: int = MIN_POST_LEN) -> Optional[str]:
+    """Обрезает только по концу предложения. Если так нельзя — возвращает None
+    (лучше пропустить пост, чем опубликовать оборванный)."""
     if len(post) <= limit:
         return post
-    raw      = post[:limit]
-    last_dot = raw.rfind(".")
-    last_q   = raw.rfind("?")
-    last_exc = raw.rfind("!")
-    cut = max(last_dot, last_q, last_exc)
-    if cut != -1 and cut >= min_cut:
-        logger.info(f"✂️ Smart clip at {cut}")
-        return raw[:cut+1].rstrip()
-    logger.info(f"✂️ Hard clip at {limit}")
-    return raw.rstrip()
+    ends = [e for e in _sentence_ends(post) if min_cut <= e <= limit]
+    if not ends:
+        logger.info("✂️ Can't clip on a sentence boundary — skip")
+        return None
+    cut = ends[-1]
+    logger.info(f"✂️ Smart clip at {cut}")
+    return post[:cut].rstrip()
+
+def trim_incomplete_tail(post: str, min_len: int = MIN_POST_LEN) -> Optional[str]:
+    """Если текст оборван — отрезает недописанный хвост до последнего законченного предложения."""
+    if is_complete_ending(post):
+        return post
+    ends = [e for e in _sentence_ends(post) if e >= min_len]
+    if not ends:
+        return None
+    logger.info(f"✂️ Removed unfinished tail ({len(post) - ends[-1]} chars)")
+    return post[:ends[-1]].rstrip()
 
 def generate_hashtags(post_text: str) -> str:
     topic = extract_topic(post_text)
@@ -552,7 +614,14 @@ def extract_article_text(html: str) -> str:
         if len(text) > 30:
             paragraphs.append(text)
     text = "\n".join(paragraphs)
-    return text[:MAX_ARTICLE_CHARS]
+    if len(text) > MAX_ARTICLE_CHARS:
+        # режем исходник тоже по концу предложения, чтобы модель не получала обрывок
+        clipped = text[:MAX_ARTICLE_CHARS]
+        ends = _sentence_ends(clipped)
+        if ends and ends[-1] > MAX_ARTICLE_CHARS // 2:
+            clipped = clipped[:ends[-1]]
+        text = clipped
+    return text
 
 def extract_article_links(base_url: str, html: str) -> List[str]:
     soup = BeautifulSoup(html, "html.parser")
@@ -597,7 +666,7 @@ async def fetch_article_from_source(session: aiohttp.ClientSession, url: str) ->
         for art in links:
             if state.is_url_posted(art):
                 continue
-            uid = f"fact_{hash(art) & 0xffffffff:x}"
+            uid = make_uid(art)
             if state.is_posted(uid):
                 continue
             html2 = await http_get_with_retry(session, art)
@@ -615,10 +684,10 @@ async def fetch_article_from_source(session: aiohttp.ClientSession, url: str) ->
         if len(text) < MIN_ARTICLE_CHARS:
             logger.info(f"Too short article: {url}")
             return None
-        uid = f"fact_{hash(url) & 0xffffffff:x}"
+        uid = make_uid(url)
         return FactItem(url=url, title=url, text=text, uid=uid)
 
-# ===== Промпт для Groq =====
+# ===== Промпты для Groq =====
 FACT_PROMPT = """
 Ты пишешь пост для Telegram-канала «Что ты не знал».
 Задача — рассказать ОДИН яркий научный или исторический факт по-человечески.
@@ -650,7 +719,8 @@ FACT_PROMPT = """
 
 пустая строка
 
-Финал — вопрос читателю про личный опыт/восприятие (без политики и без новостей).
+Финал — один короткий вопрос читателю про личный опыт/восприятие (без политики и без новостей).
+Пост ОБЯЗАТЕЛЬНО заканчивается этим вопросом со знаком «?». Каждое предложение должно быть законченным.
 
 Жёстко запрещено:
 - обсуждать текущую политику, войны, решения судов, санкции, права человека;
@@ -662,42 +732,102 @@ FACT_PROMPT = """
 Если в тексте НЕТ конкретного факта/кейса — верни «SKIP».
 Если текст про новости, политику, суды, санкции, права человека — верни «SKIP».
 
-Максимальная длина поста — 900 символов, цель 600–800.
+Длина поста — строго 600–800 символов вместе с пробелами и эмодзи (абсолютный максимум 900).
+Лучше короче, чем оборвать мысль. Верни только текст поста, без пояснений.
 
 Исходный текст статьи:
 {article}
 """
 
+SHORTEN_PROMPT = """
+Сократи этот пост для Telegram до 650–800 символов (вместе с пробелами и эмодзи).
+
+Правила:
+- сохрани заголовок с эмодзи, главный факт (числа, годы, кто что сделал), объяснение и вывод;
+- сохрани структуру блоков с пустыми строками между ними;
+- пост должен заканчиваться коротким вопросом читателю со знаком «?»;
+- каждое предложение законченное, ничего не обрывай;
+- не добавляй новых фактов.
+
+Верни только текст поста, без пояснений.
+
+Пост:
+{post}
+"""
+
 # ===== Вызов Groq =====
-async def call_groq_fact(item: FactItem) -> Optional[str]:
+async def groq_complete(prompt: str, max_tokens: int, temperature: float) -> Tuple[Optional[str], Optional[str]]:
+    """Возвращает (текст, finish_reason). finish_reason == "length" означает обрыв по лимиту."""
     model_key = "main"
     if not budget.can_use_model(model_key):
         logger.warning("⚠️ Budget exhausted")
-        return None
+        return None, None
 
     cfg = MODELS[model_key]
     await budget.wait_for_rate_limit(model_key)
 
-    prompt = FACT_PROMPT.format(article=item.text)
+    kwargs = dict(
+        model=cfg.name,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=0.9,
+        reasoning_effort=REASONING_EFFORT,
+    )
 
     try:
-        resp = await asyncio.to_thread(
-            lambda: groq_client.chat.completions.create(
-                model=cfg.name,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=700,
-                temperature=0.9,
-                top_p=0.9,
-            )
-        )
-        content = resp.choices[0].message.content.strip()
+        try:
+            resp = await asyncio.to_thread(lambda: groq_client.chat.completions.create(**kwargs))
+        except TypeError:
+            # старая версия SDK groq без reasoning_effort
+            kwargs.pop("reasoning_effort", None)
+            resp = await asyncio.to_thread(lambda: groq_client.chat.completions.create(**kwargs))
+
+        choice  = resp.choices[0]
+        content = (choice.message.content or "").strip()
+        finish  = getattr(choice, "finish_reason", None)
         usage   = getattr(resp, "usage", None)
-        tokens  = usage.total_tokens if usage else 700
+        tokens  = usage.total_tokens if usage else max_tokens
         budget.add_tokens(cfg.name, tokens)
-        return content
+        return content, finish
     except Exception as e:
         logger.error(f"Groq error: {e}")
+        return None, None
+
+async def call_groq_fact(item: FactItem) -> Optional[str]:
+    prompt = FACT_PROMPT.format(article=item.text)
+    for max_tok in GEN_MAX_TOKENS_STEPS:
+        content, finish = await groq_complete(prompt, max_tok, temperature=0.9)
+        if content is None:
+            return None
+        if finish == "length":
+            logger.info(f"⚠️ Response cut by token limit ({max_tok}), retrying with more")
+            continue
+        return content
+    logger.info("❌ Response still cut by token limit — skip")
+    return None
+
+async def shorten_post(post: str) -> Optional[str]:
+    content, finish = await groq_complete(
+        SHORTEN_PROMPT.format(post=post), SHORTEN_MAX_TOKENS, temperature=0.5
+    )
+    if not content or finish == "length":
         return None
+    return normalize_blank_lines(content).strip()
+
+async def finalize_length(post: str) -> Optional[str]:
+    """Доводит пост до лимита длины, не обрывая мысль. None — если не получилось."""
+    if len(post) <= MAX_POST_LEN:
+        return post
+
+    logger.info(f"Post too long ({len(post)}), asking model to shorten")
+    short = await shorten_post(post)
+    if short and MIN_POST_LEN <= len(short) <= MAX_POST_LEN and is_complete_ending(short):
+        logger.info(f"✅ Shortened to {len(short)}")
+        return short
+
+    logger.info("Shortening failed, clipping on sentence boundary")
+    return smart_clip(post)
 
 # ===== Отправка в Telegram =====
 async def send_to_telegram(session: aiohttp.ClientSession, text: str, url: str):
@@ -724,7 +854,7 @@ async def send_to_telegram(session: aiohttp.ClientSession, text: str, url: str):
     except Exception as e:
         logger.error(f"Telegram error: {e}")
 
-# === НОВОЕ ДЛЯ ВК: функция публикации в группу ===
+# ===== Публикация в группу ВК =====
 async def send_to_vk(session: aiohttp.ClientSession, text: str, url: str):
     if not VK_TOKEN or not VK_GROUP_ID:
         return
@@ -762,7 +892,6 @@ async def send_to_vk(session: aiohttp.ClientSession, text: str, url: str):
                 logger.info(f"✅ Posted to VK (post_id={post_id})")
     except Exception as e:
         logger.error(f"VK request error: {e}")
-# === /НОВОЕ ДЛЯ ВК ===
 
 # ===== Главная функция =====
 async def main():
@@ -813,6 +942,12 @@ async def main():
         duplicates_skipped = 0
         rejected = 0
 
+        def reject(it: FactItem, reason: str):
+            nonlocal rejected
+            logger.info(reason)
+            state.mark_posted(it.uid, it.url, it.title, it.text, extract_topic(it.text))
+            rejected += 1
+
         for it in items:
             if posts_done >= MAX_POSTS_PER_RUN:
                 break
@@ -823,87 +958,67 @@ async def main():
             attempts += 1
             logger.info(f"🔍 [{attempts}/{MAX_ATTEMPTS}] {it.url}")
 
-            if state.is_duplicate(it.title, it.text):
-                topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
-                duplicates_skipped += 1
-                continue
-
-            if state.is_too_similar_to_recent(it.title, it.text):
-                topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
+            if state.is_duplicate(it.title, it.text) or state.is_too_similar_to_recent(it.title, it.text):
+                state.mark_posted(it.uid, it.url, it.title, it.text, extract_topic(it.text))
                 duplicates_skipped += 1
                 continue
 
             post_text = await call_groq_fact(it)
             if not post_text:
-                topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
-                rejected += 1
+                reject(it, "No usable response from model")
                 continue
 
-            post_text = normalize_blank_lines(post_text)
+            post_text = normalize_blank_lines(post_text).strip()
 
-            if post_text.strip().upper().startswith("SKIP"):
-                logger.info("AI returned SKIP")
-                topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
-                rejected += 1
+            if post_text.upper().startswith("SKIP"):
+                reject(it, "AI returned SKIP")
+                continue
+
+            # 1) убираем недописанный хвост, если модель всё же оборвала текст
+            post_text = trim_incomplete_tail(post_text)
+            if not post_text:
+                reject(it, "Post is unfinished and can't be repaired, skip")
+                continue
+
+            # 2) доводим до лимита длины без обрыва мысли
+            post_text = await finalize_length(post_text)
+            if not post_text:
+                reject(it, "Can't fit post into length limit cleanly, skip")
                 continue
 
             if len(post_text) < MIN_POST_LEN:
-                logger.info(f"Post too short ({len(post_text)})")
-                topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
-                rejected += 1
+                reject(it, f"Post too short ({len(post_text)})")
                 continue
 
-            if len(post_text) > MAX_POST_LEN + 50:
-                logger.info(f"Post too long ({len(post_text)}), clipping")
-                post_text = smart_clip(post_text)
+            # 3) финальная страховка: публикуем только законченный текст
+            if not is_complete_ending(post_text):
+                reject(it, "Post doesn't end with a complete sentence, skip")
+                continue
 
             if not has_strong_fact(post_text):
-                logger.info("No strong fact, skip")
-                topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
-                rejected += 1
+                reject(it, "No strong fact, skip")
                 continue
 
             if looks_like_announcement(post_text):
-                logger.info("Looks like announcement, skip")
-                topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
-                rejected += 1
+                reject(it, "Looks like announcement, skip")
                 continue
 
             if has_banned_title(post_text):
-                logger.info("Banned title, skip")
-                topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
-                rejected += 1
+                reject(it, "Banned title, skip")
                 continue
 
             if contains_banned_phrases(post_text):
-                logger.info("Contains banned phrase, skip")
-                topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
-                rejected += 1
+                reject(it, "Contains banned phrase, skip")
                 continue
 
             if is_banned_topic(post_text):
-                logger.info("Banned topic, skip")
-                topic = extract_topic(it.text)
-                state.mark_posted(it.uid, it.url, it.title, it.text, topic)
-                rejected += 1
+                reject(it, "Banned topic, skip")
                 continue
 
-            # === НОВОЕ ДЛЯ ВК: постим в оба сервиса ===
             await send_to_telegram(session, post_text, it.url)
             await send_to_vk(session, post_text, it.url)
-            # === /НОВОЕ ДЛЯ ВК ===
 
-            topic = extract_topic(it.text)
-            state.mark_posted(it.uid, it.url, it.title, it.text, topic)
+            state.mark_posted(it.uid, it.url, it.title, it.text, extract_topic(it.text))
             posts_done += 1
 
         logger.info(f"📊 Done: {posts_done} posted, {rejected} rejected, {duplicates_skipped} duplicates")
